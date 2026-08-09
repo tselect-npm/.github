@@ -1,0 +1,17 @@
+# Keeps the SHA pins in .github/workflows/ci.yml current.
+#
+# Those pins are what stop a moved tag upstream from changing what runs in all
+# seven package repos — but a pin nobody updates is just an old version. This is
+# the automation that makes pinning sustainable rather than a slow drift.
+version: 2
+
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      # Gitmoji, matching the convention across every @tselect repo.
+      prefix: ':arrow_up:'
+    labels:
+      - dependencies
