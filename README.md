@@ -278,7 +278,8 @@ Step order matters: pnpm is installed *before* `actions/setup-node`, because
 
 Every `uses:` in `ci.yml` is pinned to a full commit SHA with the tag in a
 trailing comment. Seven repos delegate their CI here; a moved tag upstream should
-not be able to change what runs in all of them.
+not be able to change what runs in all of them. [Dependabot](.github/dependabot.yml)
+keeps the pins current — a pin nobody updates is just an old version.
 
 ### Coverage goes to Coveralls
 
