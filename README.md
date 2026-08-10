@@ -136,9 +136,9 @@ repos.
 ### `test (node NN)` — the matrix
 
 Runs `pnpm cov` on every supported Node line. Coverage runs on all of them rather
-than just one because the thresholds (100% for `url`) are part of the gate, and
-because a runtime-specific failure should surface as a test failure on that
-runtime.
+than just one because the thresholds (a 95% floor shared across the seven
+packages; `url` sits at 100) are part of the gate, and because a runtime-specific
+failure should surface as a test failure on that runtime.
 
 This matrix is the point of the whole exercise: the support ceiling used to be
 asserted from one local Node and reasoned about. Now it is executed.
