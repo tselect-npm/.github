@@ -1,0 +1,375 @@
+# Reusable CI for every @tselect package.
+#
+#   uses: tselect-npm/.github/.github/workflows/ci.yml@v1
+#
+# Callers MUST pin a tag. Never `@main` — an edit here would otherwise change all
+# seven repos' CI at once. See the README for the caller template and inputs.
+#
+# Every action below is pinned to a commit SHA (the tag is in the trailing
+# comment) so a moved tag upstream cannot silently change what runs in seven
+# repos. Dependabot keeps the pins current.
+
+name: CI
+
+on:
+  workflow_call:
+    inputs:
+      # --- matrix -------------------------------------------------------------
+      node-versions:
+        description: 'JSON array of Node versions to test. Default is every line still receiving security support: 22 (maintenance LTS), 24 (active LTS), 26 (current).'
+        type: string
+        default: '["22", "24", "26"]'
+      primary-node-version:
+        description: 'The version that runs the static checks and uploads coverage. Must be one of node-versions.'
+        type: string
+        default: '24'
+      runs-on:
+        description: 'Runner label.'
+        type: string
+        default: ubuntu-latest
+
+      # --- scripts (set to '' to skip the step) -------------------------------
+      # These name package.json scripts, not commands, so a repo mid-migration
+      # can opt out of a check it does not have yet.
+      typecheck-script:
+        description: "package.json script for typechecking. '' skips it."
+        type: string
+        default: typecheck
+      lint-script:
+        description: "package.json script for linting (Biome's `check` covers formatting too). '' skips it."
+        type: string
+        default: lint
+      coverage-script:
+        description: "package.json script that runs the tests with coverage. Runs on every matrix entry. '' falls back to test-script."
+        type: string
+        default: cov
+      test-script:
+        description: 'package.json script that runs the tests without coverage. Only used when coverage-script is empty.'
+        type: string
+        default: test
+      build-script:
+        description: "package.json script that builds the publishable output. '' skips the build job entirely."
+        type: string
+        default: build
+
+      # --- install ------------------------------------------------------------
+      install-command:
+        description: 'Dependency install command. pnpm is provisioned from the packageManager field.'
+        type: string
+        default: pnpm install --frozen-lockfile
+
+      # --- coverage -----------------------------------------------------------
+      coverage-lcov:
+        description: 'Path to the lcov report produced by coverage-script.'
+        type: string
+        default: coverage/lcov.info
+      upload-coverage:
+        description: 'Send lcov to Coveralls (badge + PR comment). Skipped automatically for pull requests from forks, which have a read-only token.'
+        type: boolean
+        default: true
+
+      # --- publishable-artifact gates ----------------------------------------
+      dist-dir:
+        description: 'Directory the build writes to.'
+        type: string
+        default: dist
+      es-check-target:
+        description: "ECMAScript version the built output must not exceed. This is the support policy's runtime floor, asserted by parsing rather than grepping. '' skips the check."
+        type: string
+        default: es2015
+      check-types-resolution:
+        description: 'Run @arethetypeswrong/cli against the packed tarball (validates the exports map and dual-package type resolution).'
+        type: boolean
+        default: true
+      attw-profile:
+        description: "@arethetypeswrong/cli profile: node16 (its default; ignores node10 resolution), strict (ignores nothing) or esm-only."
+        type: string
+        default: node16
+      upload-package:
+        description: 'Keep the packed tarball as a workflow artifact. Useful while publishing is still manual.'
+        type: boolean
+        default: true
+
+      # --- audit --------------------------------------------------------------
+      audit:
+        description: 'Run pnpm audit.'
+        type: boolean
+        default: true
+      audit-level:
+        description: 'Minimum severity that counts: low | moderate | high | critical.'
+        type: string
+        default: low
+      audit-blocking:
+        description: 'Fail the build on audit findings. Set false for repos that have not finished migrating off the old mocha/nyc tree yet.'
+        type: boolean
+        default: true
+
+      # --- pinned tool versions ----------------------------------------------
+      es-check-version:
+        type: string
+        default: '9.6.4'
+      attw-version:
+        type: string
+        default: '0.18.5'
+
+permissions:
+  contents: read
+
+# No `concurrency` here on purpose. Inside a reusable workflow `github.workflow`
+# and `github.ref` resolve to the *caller's*, so two caller jobs pointing at this
+# file land in the same group and cancel each other. Cancellation policy belongs
+# to the caller — the README's template sets it there.
+
+jobs:
+  # Tests run on every supported Node line — this is what turns "we support 22
+  # through 26" from an assertion into something proven. Coverage runs on all of
+  # them (the thresholds are part of the gate); only the primary version uploads.
+  test:
+    name: test (node ${{ matrix.node }})
+    runs-on: ${{ inputs.runs-on }}
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ${{ fromJSON(inputs.node-versions) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Order matters: pnpm must exist before setup-node's cache step looks for
+      # it. Corepack is deliberately not used — Node stopped shipping it at v25,
+      # so on a Node 26 runner `corepack` only resolves because the runner image
+      # happens to carry a global copy. That is an image detail, not a contract.
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        # No `version` input: it is read from `packageManager` in package.json.
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+
+      - name: Install
+        run: ${{ inputs.install-command }}
+
+      - name: Test
+        env:
+          COVERAGE_SCRIPT: ${{ inputs.coverage-script }}
+          TEST_SCRIPT: ${{ inputs.test-script }}
+        run: |
+          set -euo pipefail
+          if [ -n "$COVERAGE_SCRIPT" ]; then
+            pnpm run "$COVERAGE_SCRIPT"
+          elif [ -n "$TEST_SCRIPT" ]; then
+            pnpm run "$TEST_SCRIPT"
+          else
+            echo "::error::neither coverage-script nor test-script is set"
+            exit 1
+          fi
+
+      # Coveralls authenticates with the built-in GITHUB_TOKEN, so no secret has
+      # to be provisioned in any of the seven repos. Fork PRs get a read-only
+      # token, so the upload is skipped rather than failed there.
+      - name: Upload coverage to Coveralls
+        if: >-
+          inputs.upload-coverage
+          && matrix.node == inputs.primary-node-version
+          && (github.event_name != 'pull_request'
+              || github.event.pull_request.head.repo.full_name == github.repository)
+        uses: coverallsapp/github-action@8d6379e14d29928660c4ba802d8e85393440b329 # v2.3.8
+        with:
+          file: ${{ inputs.coverage-lcov }}
+          format: lcov
+          fail-on-error: false
+
+  # Typecheck and lint share one job: these packages are small enough that a
+  # second runner costs more in setup than it saves in wall-clock. `!cancelled()`
+  # on the later steps means a typecheck failure still reports the lint result,
+  # so one push surfaces every problem instead of one at a time.
+  static:
+    name: typecheck + lint
+    if: inputs.typecheck-script != '' || inputs.lint-script != ''
+    runs-on: ${{ inputs.runs-on }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ inputs.primary-node-version }}
+          cache: pnpm
+
+      - name: Install
+        run: ${{ inputs.install-command }}
+
+      - name: Typecheck
+        if: inputs.typecheck-script != ''
+        run: pnpm run "$SCRIPT"
+        env:
+          SCRIPT: ${{ inputs.typecheck-script }}
+
+      - name: Lint
+        if: ${{ !cancelled() && inputs.lint-script != '' }}
+        run: pnpm run "$SCRIPT"
+        env:
+          SCRIPT: ${{ inputs.lint-script }}
+
+  # The build job exists to distrust the build's exit code. A build tool can
+  # report success and still drop declarations, and a packing mistake can ship a
+  # tarball with no JavaScript at all — both have happened here. So: build, then
+  # assert what came out, then assert what a consumer would actually receive.
+  build:
+    name: build + package
+    if: inputs.build-script != ''
+    runs-on: ${{ inputs.runs-on }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ inputs.primary-node-version }}
+          cache: pnpm
+
+      - name: Install
+        run: ${{ inputs.install-command }}
+
+      - name: Build
+        id: build
+        run: pnpm run "$SCRIPT"
+        env:
+          SCRIPT: ${{ inputs.build-script }}
+
+      - name: Assert the build emitted JavaScript and declarations
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        env:
+          DIST: ${{ inputs.dist-dir }}
+        run: |
+          set -euo pipefail
+          test -d "$DIST" || { echo "::error::$DIST does not exist"; exit 1; }
+          js=$(find "$DIST" -type f \( -name '*.js' -o -name '*.cjs' -o -name '*.mjs' \) -size +0c | wc -l)
+          dts=$(find "$DIST" -type f \( -name '*.d.ts' -o -name '*.d.cts' -o -name '*.d.mts' \) -size +0c | wc -l)
+          echo "$DIST: $js non-empty JavaScript file(s), $dts non-empty declaration file(s)"
+          [ "$js" -gt 0 ] || { echo "::error::$DIST contains no JavaScript"; exit 1; }
+          [ "$dts" -gt 0 ] || { echo "::error::$DIST contains no type declarations"; exit 1; }
+
+      # The support policy is additive: the emitted syntax level must never rise.
+      # es-check parses the output with acorn at the target version, which is why
+      # this replaces grepping for `?.` / `??` / `#private` — a grep also has to
+      # strip comments first (tsdown emits `//#region` markers) and still cannot
+      # see syntax it was not told to look for.
+      - name: Assert emitted syntax is no newer than ${{ inputs.es-check-target }}
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && inputs.es-check-target != '' }}
+        env:
+          DIST: ${{ inputs.dist-dir }}
+          TARGET: ${{ inputs.es-check-target }}
+          ES_CHECK_VERSION: ${{ inputs.es-check-version }}
+        run: |
+          set -euo pipefail
+          # .cjs is always script, .mjs always module; bare .js follows the
+          # package's `type` field.
+          type_field=$(node -p "require('./package.json').type || 'commonjs'")
+          if [ -n "$(find "$DIST" -name '*.cjs' -print -quit)" ]; then
+            pnpm dlx "es-check@$ES_CHECK_VERSION" "$TARGET" "$DIST/**/*.cjs"
+          fi
+          if [ -n "$(find "$DIST" -name '*.mjs' -print -quit)" ]; then
+            pnpm dlx "es-check@$ES_CHECK_VERSION" "$TARGET" "$DIST/**/*.mjs" --module
+          fi
+          if [ -n "$(find "$DIST" -name '*.js' -print -quit)" ]; then
+            if [ "$type_field" = "module" ]; then
+              pnpm dlx "es-check@$ES_CHECK_VERSION" "$TARGET" "$DIST/**/*.js" --module
+            else
+              pnpm dlx "es-check@$ES_CHECK_VERSION" "$TARGET" "$DIST/**/*.js"
+            fi
+          fi
+
+      # `npm pack --dry-run` in a dirty tree once reported files a clean checkout
+      # would never produce, which is how a release shipped with zero JavaScript.
+      # Pack for real, then read the tarball.
+      - name: Pack and inspect the tarball a consumer would download
+        id: pack
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          # Pack into an empty directory rather than parsing pnpm's stdout — the
+          # prepack script writes there too.
+          dest="$RUNNER_TEMP/packed"
+          mkdir -p "$dest"
+          pnpm pack --pack-destination "$dest"
+          tarball=$(find "$dest" -maxdepth 1 -name '*.tgz' | head -n 1)
+          test -n "$tarball" || { echo "::error::pnpm pack produced no tarball"; exit 1; }
+          echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
+          echo "### Published tarball contents" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          tar -tzf "$tarball" | sort | tee -a "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          js=$(tar -tzf "$tarball" | grep -cE '\.(js|cjs|mjs)$' || true)
+          [ "$js" -gt 0 ] || { echo "::error::the packed tarball contains no JavaScript"; exit 1; }
+
+      - name: Check type resolution with @arethetypeswrong/cli
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && inputs.check-types-resolution }}
+        env:
+          ATTW_VERSION: ${{ inputs.attw-version }}
+          ATTW_PROFILE: ${{ inputs.attw-profile }}
+          TARBALL: ${{ steps.pack.outputs.tarball }}
+        run: pnpm dlx "@arethetypeswrong/cli@$ATTW_VERSION" "$TARBALL" --profile "$ATTW_PROFILE"
+
+      - name: Upload the tarball
+        if: ${{ !cancelled() && steps.pack.outcome == 'success' && inputs.upload-package }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: package-tarball
+          path: ${{ steps.pack.outputs.tarball }}
+          retention-days: 7
+          if-no-files-found: error
+
+  # Zero vulnerabilities is a standing requirement; this is what makes it a gate
+  # rather than something remembered. No install needed — pnpm audits the
+  # lockfile. Repos still carrying the old mocha/nyc tree set audit-blocking:
+  # false so the finding is reported without blocking their migration.
+  audit:
+    name: audit
+    if: inputs.audit
+    runs-on: ${{ inputs.runs-on }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ inputs.primary-node-version }}
+      # Advisory mode is a step-level branch rather than job-level
+      # continue-on-error, so `needs.audit.result` stays unambiguous for the
+      # aggregate job below.
+      - name: pnpm audit
+        env:
+          LEVEL: ${{ inputs.audit-level }}
+          BLOCKING: ${{ inputs.audit-blocking }}
+        run: |
+          if pnpm audit --audit-level "$LEVEL"; then
+            exit 0
+          fi
+          if [ "$BLOCKING" = "true" ]; then
+            echo "::error::pnpm audit found vulnerabilities at or above '$LEVEL'"
+            exit 1
+          fi
+          echo "::warning::pnpm audit found vulnerabilities at or above '$LEVEL' (advisory: audit-blocking is false)"
+
+  # One stable check name for branch protection. Matrix job names change whenever
+  # node-versions changes; this one does not, so the seven repos can require
+  # "CI / ci" and never touch their settings again.
+  #
+  # `needs` alone is not enough: a skipped dependency counts as satisfied, so the
+  # result is inspected explicitly.
+  ci:
+    name: ci
+    if: ${{ always() }}
+    needs: [test, static, build, audit]
+    runs-on: ${{ inputs.runs-on }}
+    steps:
+      - name: Collect results
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          echo "$RESULTS"
+          # 'skipped' is allowed — it means the caller turned that job off.
+          if echo "$RESULTS" | grep -qE '"result"[[:space:]]*:[[:space:]]*"(failure|cancelled)"'; then
+            echo "::error::one or more CI jobs did not succeed"
+            exit 1
+          fi
+          echo "All CI jobs succeeded or were skipped."
