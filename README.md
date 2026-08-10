@@ -227,13 +227,32 @@ else*. `primary-node-version` is 24, the active LTS.
 When 22 goes EOL, editing this file's default and moving the `v1` tag updates all
 seven repos at once. That is the leverage the tag pin protects.
 
-> **`engines.node` is still undeclared.** It was deferred to this CI work so the
-> declared floor would ship with the matrix that proves it, and it has been
-> deferred again: the matrix now exists, but no package declares a contract. The
-> options remain `">=22"` (matches the matrix exactly; a major for all seven),
-> `">=6"` (what the ES2015 zero-dependency output genuinely runs on;
-> non-breaking, but claims lines nothing tests) and `">=20"` (still a floor raise,
-> still a major). See `URL-PILOT.md` §3.
+### `engines.node` is the bottom of this matrix
+
+**Every `@tselect` package declares `"engines": { "node": ">=22" }`** — the same
+number as the lowest line above, deliberately. `engines` is enforced (pnpm hard-
+fails an install below the floor), so it is a promise, and a promise nobody runs
+is a comment. Making the floor *equal* the bottom of the matrix means it is
+proven by construction, with no extra job and nothing to keep in sync.
+
+`>=20` was the first choice and is not viable. It cannot be tested even if you
+add 20 to the matrix: **pnpm 11 declares `node >=22.13` and crashes outright on
+Node 20** with `ERR_UNKNOWN_BUILTIN_MODULE: No such built-in module: node:sqlite`
+— the install step dies before a single test runs. `tsdown` wants
+`^22.18.0 || >=24.11.0` for the same reason. Testing it would mean an npm
+fallback on that one matrix row, which is precisely the per-repo special-casing
+this repository exists to avoid.
+
+Since `>=20` and `>=22` both break someone and both cost a major version, the tie
+goes to the one that can be proven. Node 20 reached EOL on 2026-04-30, so nothing
+still receiving security support is dropped.
+
+> This supersedes the original *additive support policy* ("never raise the
+> runtime floor, only extend the ceiling"). That policy assumed a wide floor was
+> free; it is not, because an undeclared floor is not a wider promise — only an
+> untested one. The ceiling half still stands, and `es-check-target` still keeps
+> the **emitted syntax** at ES2015 regardless, so the shipped code is not what
+> forces the floor. The toolchain is.
 
 ---
 
