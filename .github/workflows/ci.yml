@@ -16,7 +16,7 @@ on:
     inputs:
       # --- matrix -------------------------------------------------------------
       node-versions:
-        description: 'JSON array of Node versions to test. Default is every line still receiving security support: 22 (maintenance LTS), 24 (active LTS), 26 (current).'
+        description: 'JSON array of Node versions to test. Default is every line still receiving security support: 22 (maintenance LTS), 24 (active LTS), 26 (current). The lowest entry is also every package''s declared engines.node floor, so the floor is tested by construction.'
         type: string
         default: '["22", "24", "26"]'
       primary-node-version:
