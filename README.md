@@ -10,7 +10,7 @@ their CI logic is allowed to be shared.
 
 | Workflow | Purpose |
 | --- | --- |
-| [`ci.yml`](.github/workflows/ci.yml) | Typecheck · lint · test + coverage · build · audit, across the supported Node matrix |
+| [`ci.yml`](.github/workflows/ci.yml) | Typecheck · lint · test + coverage · build · smoke · audit, across the supported Node matrix |
 
 ---
 
@@ -34,10 +34,15 @@ concurrency:
 jobs:
   ci:
     uses: tselect-npm/.github/.github/workflows/ci.yml@v1
+    with:
+      # The runtimes the published tarball must load on. Match the repo's
+      # `engines.node` floor; omit only if the repo declares no floor.
+      smoke-node-versions: '["14.0.0", "14", "16", "18", "20"]'
 ```
 
-That is the whole caller for a repo on the current toolchain — every input has a
-default suited to it.
+That is the whole caller for a repo on the current toolchain. Every other input
+has a default suited to it; `smoke-node-versions` is the exception because only
+the repo knows what its `package.json` promises.
 
 ### Pin a tag, never `@main`
 
@@ -115,6 +120,12 @@ its migration can adopt the workflow before it has every script.
 | `attw-profile` | `node16` | `strict` ignores nothing, including node10 resolution |
 | `upload-package` | `true` | Keeps the packed tarball as an artifact for 7 days |
 
+### `engines.node`
+
+| Input | Default | Notes |
+| --- | --- | --- |
+| `smoke-node-versions` | `'[]'` | JSON array of Node versions to load the packed tarball on. Put the declared `engines.node` floor here, and every line between it and the test matrix. `'[]'` skips the job |
+
 ### Audit
 
 | Input | Default | Notes |
@@ -183,6 +194,37 @@ rather than exit codes:
 5. The tarball is kept as an artifact. Publishing is still manual, so having the
    exact reviewed artifact to hand is worth the 7 days of retention.
 
+### `smoke (node NN)` — making `engines.node` a tested claim
+
+A package that declares `engines.node` is making a promise, and pnpm *enforces*
+it — an install on a runtime below the floor hard-fails. A promise nobody tests
+is just a comment, so this job tests it.
+
+It cannot be done in the `test` matrix. pnpm, Vitest and tsdown all need a modern
+Node, so the sources can never run on the declared floor — which is precisely why
+the floor went unverified for so long, and why the honest-sounding options were
+"declare the matrix and break people" or "declare something wide and hope". The
+way out is that `engines.node` is a promise about the *artifact*, not about the
+build. So this job:
+
+- takes the tarball the `build` job packed — the exact bytes a consumer installs;
+- installs it with `npm install <tarball>` using **the npm that ships with that
+  Node version**, in a scratch directory with no toolchain and no checkout;
+- loads it both ways, `require()` and `import()`, and asserts real exports come
+  back.
+
+That covers the parts of a package that actually break on old runtimes: the
+`exports` map (ignored entirely before Node 12.17, so consumers silently fall
+through to `main`), the emitted syntax, and the CJS/ESM split.
+
+`fail-fast: false`, so a floor that turns out to be one line too low reports
+exactly which line, rather than the first one to fail.
+
+Set `smoke-node-versions` to the declared floor plus every line up to the test
+matrix. `url` uses `["14.0.0", "14", "16", "18", "20"]` for `"node": ">=14"` —
+the exact floor version is pinned alongside the line's latest, because `>=14`
+claims 14.0.0 and 14.0.0 is not 14.21.3.
+
 ### `audit` — the zero-vulnerabilities gate
 
 `pnpm audit --audit-level low`, with no install (pnpm audits the lockfile). Zero
@@ -227,13 +269,23 @@ else*. `primary-node-version` is 24, the active LTS.
 When 22 goes EOL, editing this file's default and moving the `v1` tag updates all
 seven repos at once. That is the leverage the tag pin protects.
 
-> **`engines.node` is still undeclared.** It was deferred to this CI work so the
-> declared floor would ship with the matrix that proves it, and it has been
-> deferred again: the matrix now exists, but no package declares a contract. The
-> options remain `">=22"` (matches the matrix exactly; a major for all seven),
-> `">=6"` (what the ES2015 zero-dependency output genuinely runs on;
-> non-breaking, but claims lines nothing tests) and `">=20"` (still a floor raise,
-> still a major). See `URL-PILOT.md` §3.
+### `engines.node` is a *separate* matrix
+
+The test matrix is the **ceiling**: the lines the sources are exercised on.
+`engines.node` is the **floor**, and the two cannot be the same number without
+breaking people — declaring `">=22"` would hard-fail every pnpm install on Node
+20 and below, a major version for all seven packages, and it would contradict the
+additive support policy (never raise the floor, only extend the ceiling).
+
+`url` declares `"node": ">=14"`: Node 14 is where the conditional `exports` map
+became stable, so it is the oldest runtime that resolves this package *correctly*
+rather than merely parsing it. Non-breaking, so it ships as a minor.
+
+The floor is not taken on trust. `smoke-node-versions` runs the packed tarball on
+`14.0.0`, `14`, `16`, `18` and `20` — see [the `smoke`
+job](#smoke-node-nn--making-enginesnode-a-tested-claim). If a line fails, the
+declared floor moves up to the one that passes. Nothing is claimed that is not
+loaded.
 
 ---
 
@@ -360,3 +412,14 @@ The one path not exercised is the Coveralls upload, which was disabled during
 testing so it would not create a Coveralls project for this repository. It is
 `fail-on-error: false`, so the worst case is a missing report rather than a red
 build.
+
+### `smoke` (added in `v1.1.0`)
+
+Validated against the JSON schema, and its shell body extracted and run for real
+against `@tselect/url`'s packed tarball — `require()` and `import()` both
+returned all seven exports. What that local run could *not* cover is the old
+runtimes themselves, since the point of the job is Node lines this machine does
+not have. `actions/setup-node` provisioning 14/16/18/20 on `ubuntu-latest`
+(24.04) is exercised by `url`'s first CI run; if a line cannot be provisioned it
+comes out of `smoke-node-versions` and out of the declared floor, rather than
+being quietly assumed to work.

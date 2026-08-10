@@ -90,6 +90,18 @@ on:
         type: boolean
         default: true
 
+      # --- engines.node ------------------------------------------------------
+      smoke-node-versions:
+        description: >-
+          JSON array of Node versions to load the packed tarball on. This is how
+          `engines.node` stops being an assertion: the declared floor and every
+          line up to the test matrix goes here. Empty array skips the job.
+          Runtimes older than the dev toolchain supports belong here and only
+          here — pnpm, Vitest and tsdown cannot run on them, but the published
+          artifact can, and that is what a consumer receives.
+        type: string
+        default: '[]'
+
       # --- audit --------------------------------------------------------------
       audit:
         description: 'Run pnpm audit.'
@@ -309,14 +321,106 @@ jobs:
           TARBALL: ${{ steps.pack.outputs.tarball }}
         run: pnpm dlx "@arethetypeswrong/cli@$ATTW_VERSION" "$TARBALL" --profile "$ATTW_PROFILE"
 
+      # Uploaded whenever the smoke job needs it, even if the caller does not
+      # want the artifact kept for its own sake.
       - name: Upload the tarball
-        if: ${{ !cancelled() && steps.pack.outcome == 'success' && inputs.upload-package }}
+        if: >-
+          ${{ !cancelled() && steps.pack.outcome == 'success'
+              && (inputs.upload-package
+                  || join(fromJSON(inputs.smoke-node-versions), ',') != '') }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: package-tarball
           path: ${{ steps.pack.outputs.tarball }}
           retention-days: 7
           if-no-files-found: error
+
+  # `engines.node` is a promise to consumers, and a promise nobody tests is just
+  # a comment. This job keeps it honest: it installs the packed tarball with the
+  # npm that ships with each declared runtime and loads both entry points.
+  #
+  # It deliberately does NOT check out the sources or use pnpm. pnpm, Vitest and
+  # tsdown all require a modern Node, so the declared floor can never appear in
+  # the `test` matrix — which is exactly why the floor used to go unverified. The
+  # artifact is the thing the promise is about, so the artifact is what runs.
+  smoke:
+    name: smoke (node ${{ matrix.node }})
+    if: >-
+      ${{ inputs.build-script != ''
+          && join(fromJSON(inputs.smoke-node-versions), ',') != '' }}
+    needs: build
+    runs-on: ${{ inputs.runs-on }}
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ${{ fromJSON(inputs.smoke-node-versions) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: package-tarball
+          path: ${{ runner.temp }}/tarball
+
+      # `check-latest: false` and no `cache:` — the toolcache copy is what we
+      # want, and there is no lockfile to key a cache on.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ matrix.node }}
+          check-latest: false
+
+      - name: Load the published package on Node ${{ matrix.node }}
+        env:
+          TARBALL_DIR: ${{ runner.temp }}/tarball
+        run: |
+          set -euo pipefail
+          node --version
+          npm --version
+
+          tarball=$(find "$TARBALL_DIR" -maxdepth 1 -name '*.tgz' | head -n 1)
+          test -n "$tarball" || { echo "::error::no tarball artifact found"; exit 1; }
+          # Read the name with the checkout's package.json, before leaving it.
+          PKG=$(node -p "require('./package.json').name")
+          export PKG
+
+          dir="$RUNNER_TEMP/smoke"
+          mkdir -p "$dir"
+          cd "$dir"
+          # A plain CommonJS consumer: nothing here should depend on the
+          # package's own `type` field.
+          echo '{"name":"smoke-consumer","version":"1.0.0","private":true}' > package.json
+          # --ignore-scripts because a consumer install must never need them.
+          npm install --no-audit --no-fund --ignore-scripts "$tarball"
+
+          cat > require.cjs <<'JS'
+          const assert = require('assert');
+          const m = require(process.env.PKG);
+          assert(m != null, 'require() resolved to null/undefined');
+          const type = typeof m;
+          assert(type === 'object' || type === 'function', `require() gave a ${type}`);
+          if (type === 'object') {
+            assert(Object.keys(m).length > 0, 'require() gave an object with no exports');
+          }
+          console.log('  require() ok →', type === 'object' ? Object.keys(m).sort().join(', ') : 'callable');
+          JS
+
+          # No top-level await: it is not available on every line this job covers.
+          cat > import.mjs <<'JS'
+          import assert from 'assert';
+          import(process.env.PKG).then((ns) => {
+            assert(ns != null, 'import() resolved to null/undefined');
+            const keys = Object.keys(ns).filter((k) => k !== 'default');
+            assert(keys.length > 0 || ns.default != null, 'import() exposed no exports');
+            console.log('  import()  ok →', keys.sort().join(', ') || 'default');
+          }).catch((err) => {
+            console.error(err);
+            process.exit(1);
+          });
+          JS
+
+          echo "Loading $PKG on $(node --version):"
+          node require.cjs
+          node import.mjs
 
   # Zero vulnerabilities is a standing requirement; this is what makes it a gate
   # rather than something remembered. No install needed — pnpm audits the
@@ -358,7 +462,7 @@ jobs:
   ci:
     name: ci
     if: ${{ always() }}
-    needs: [test, static, build, audit]
+    needs: [test, static, build, smoke, audit]
     runs-on: ${{ inputs.runs-on }}
     steps:
       - name: Collect results
