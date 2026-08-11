@@ -1,4 +1,4 @@
-# Keeps the SHA pins in .github/workflows/ci.yml current.
+# Keeps the pins in this repository current.
 #
 # Those pins are what stop a moved tag upstream from changing what runs in all
 # seven package repos — but a pin nobody updates is just an old version. This is
@@ -6,6 +6,7 @@
 version: 2
 
 updates:
+  # The `uses:` SHAs in .github/workflows/.
   - package-ecosystem: github-actions
     directory: /
     schedule:
@@ -15,3 +16,32 @@ updates:
       prefix: ':arrow_up:'
     labels:
       - dependencies
+
+  # The `uses:` SHAs inside the composite action. Dependabot resolves
+  # github-actions manifests per directory, and an action.yml outside the root is
+  # invisible to the entry above — the pins in the wrapper would silently never
+  # be updated.
+  - package-ecosystem: github-actions
+    directory: /actions/run-ci-script
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ':arrow_up:'
+    labels:
+      - dependencies
+
+  # tsx, TypeScript and @types/node, used to typecheck scripts/ci/ in the
+  # self-check workflow. Nothing here is published; these never reach a package
+  # repository, which is why they are grouped into a single low-noise PR.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: ':arrow_up:'
+    labels:
+      - dependencies
+    groups:
+      ci-tooling:
+        patterns:
+          - '*'

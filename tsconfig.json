@@ -1,0 +1,26 @@
+// These scripts are never compiled — tsx strips the types and runs them. This
+// config exists so the same code is typechecked in CI and in an editor, which is
+// most of the point of moving the jobs out of bash.
+{
+  "compilerOptions": {
+    "target": "es2023",
+    "lib": ["es2023"],
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "types": ["node"],
+
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+
+    // Imports carry the .ts extension because that is what tsx and Node resolve
+    // at runtime. Nothing here is emitted, so the compiler accepts them.
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "noEmit": true,
+
+    "skipLibCheck": true
+  },
+  "include": ["scripts/**/*.ts"]
+}
