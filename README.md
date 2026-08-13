@@ -1,7 +1,7 @@
 # `tselect-npm/.github`
 
-Shared GitHub Actions workflows for the seven `@tselect` packages, plus the
-[organization profile README](profile/README.md).
+Shared GitHub Actions workflows and repository rulesets for the seven `@tselect`
+packages, plus the [organization profile README](profile/README.md).
 
 The `@tselect` packages are a **polyrepo** — `access-control`, `countries`,
 `http-method`, `schema`, `status-code`, `thrown` and `url` are independent
@@ -11,7 +11,11 @@ their CI logic is allowed to be shared.
 | Workflow | Purpose |
 | --- | --- |
 | [`ci.yml`](.github/workflows/ci.yml) | Typecheck · lint · test + coverage · build · audit, across the supported Node matrix |
-| [`self-check.yml`](.github/workflows/self-check.yml) | Typechecks the CI scripts and lints the workflows in this repository |
+| [`self-check.yml`](.github/workflows/self-check.yml) | Typechecks the CI scripts, lints the workflows, and parses the rulesets |
+
+Alongside them, [`rulesets/`](rulesets/) holds four importable branch rulesets —
+one protection per file, so each can be disabled on its own. See
+[Rulesets](#rulesets).
 
 ---
 
@@ -67,10 +71,86 @@ caller, as the template above does.
 
 ### Branch protection
 
-Require the check named **`ci`**. It is an aggregate job that depends on all the
-others, so it stays stable while matrix job names (`test (node 26)`, …) change
-with `node-versions`. Requiring the matrix names directly would mean editing
-seven repos' settings every time the Node schedule moves.
+Require the check named **`ci / ci`** — `ci` is the aggregate job, and the
+`ci /` prefix is the caller's job id, which is how a reusable workflow's jobs are
+reported. The aggregate depends on all the others, so the name stays stable while
+matrix job names (`ci / test (node 26)`, …) change with `node-versions`.
+Requiring the matrix names directly would mean editing seven repos' settings
+every time the Node schedule moves.
+
+The four rulesets in [`rulesets/`](rulesets/) are the ready-made version of this
+— see below.
+
+---
+
+## Rulesets
+
+[`rulesets/`](rulesets/) holds four repository rulesets as importable JSON, one
+protection each:
+
+| File | Rule | Effect on the default branch |
+| --- | --- | --- |
+| [`pr-required.json`](rulesets/pr-required.json) | `pull_request` | No direct pushes; changes land through a squashed PR |
+| [`ci-required.json`](rulesets/ci-required.json) | `required_status_checks` | `ci / ci` must pass |
+| [`no-force-push.json`](rulesets/no-force-push.json) | `non_fast_forward` | No force-pushes |
+| [`no-delete.json`](rulesets/no-delete.json) | `deletion` | The branch cannot be deleted |
+
+All four target `~DEFAULT_BRANCH` only, so feature branches stay free to be
+force-pushed, rebased and deleted.
+
+`pr-required` carries three settings beyond "a PR is required", since the
+`pull_request` rule is the one place they can live:
+
+* `required_approving_review_count: 0` — one person maintains all seven repos, so
+  requiring an approval would mean requiring a bypass. The PR still has to exist,
+  which is what makes CI run and the diff readable before it lands.
+* `required_review_thread_resolution: true` — a comment thread has to be resolved
+  rather than scrolled past. Cheap when the reviewer is you; the point is that
+  CodeQL and review comments cannot be merged over silently.
+* `allowed_merge_methods: ["squash"]` — `main` gets one commit per PR. Note the
+  trade: a branch with a curated gitmoji history collapses into a single commit,
+  and the individual messages survive only in the squash body.
+
+### Why four files and not one
+
+One ruleset carrying all four rules is a single switch: needing to force-push
+once means turning off the PR requirement and the CI gate at the same time. Split
+one-per-file, each protection is disabled and re-enabled on its own, and the
+repo's rules list reads as four named lines rather than one opaque entry.
+
+That granularity is the reason **`bypass_actors` is empty in all four**. A
+standing `OrganizationAdmin` bypass would make every rule advisory for the only
+person who pushes here, which is the same as not having them. The escape hatch is
+to set that one ruleset to **Disabled**, do the thing, and set it back — visible
+in the ruleset's history, unlike a silent bypass.
+
+### Importing
+
+Per repo: **Settings → Rules → Rulesets → New ruleset → Import a ruleset**, then
+pick the file. Repeat for each of the four. The `name` in each file is what the
+ruleset is called once imported, and it matches the filename so a ruleset in the
+settings UI can be traced back here.
+
+Nothing keeps an imported copy in sync with this repository — an edit here has to
+be re-imported (or hand-applied) in each repo. With seven repos and four files
+that is 28 imports, which is the cost of these being repository rulesets rather
+than one org ruleset. They are repository rulesets on purpose: an org ruleset
+cannot be disabled for a single repo, so a repo mid-migration could not opt out
+of the CI gate before it has CI.
+
+### Two things to check before importing `ci-required`
+
+* The repo must already have a green `ci / ci` run. A required check that has
+  never reported blocks every PR, with nothing to click.
+* `integration_id` is `15368` — GitHub Actions. It pins the check to that app, so
+  another integration cannot satisfy the requirement by posting a status with the
+  same name.
+
+`strict_required_status_checks_policy` is `false`: a PR does not have to be
+rebased onto the tip of the default branch before merging. These packages are
+small and rarely have two PRs open at once, so the requirement would mostly be a
+round-trip. `do_not_enforce_on_create` is `true` so branch creation is not
+blocked by a check that has not run yet.
 
 ---
 
@@ -569,3 +649,40 @@ repository, so it was probed from `tselect-npm/url` against a scratch tag before
 `v1` moved. That probe is what established the ref-resolution table above — the
 first two attempts failed in 2–4 seconds, both at action resolution rather than
 in any job logic.
+
+### The rulesets
+
+All four were imported into `tselect-npm/url` and are active there. Read back
+through the API, each one round-trips to what is in this directory:
+
+```console
+$ gh api repos/tselect-npm/url/rulesets --jq '.[] | "\(.name)\t\(.enforcement)"'
+ci-required     active
+no-delete       active
+no-force-push   active
+pr-required     active
+```
+
+One thing that shows up on the way back and not on the way in: GitHub fills in
+`dismissal_restriction` and `required_reviewers` on the `pull_request` rule
+itself. They are defaults, not something the import dropped or changed — but a
+ruleset re-exported from the settings UI will carry them, so a diff against
+`pr-required.json` is not evidence of drift.
+
+The one value that cannot be checked by parsing is the required check name.
+`ci / ci` and `integration_id: 15368` were read off the live check runs on
+`tselect-npm/url`'s `main`, not inferred from `ci.yml`:
+
+```console
+$ gh api repos/tselect-npm/url/commits/main/check-runs \
+    --jq '.check_runs[] | "\(.name)\tapp=\(.app.id)"'
+ci / ci                 app=15368
+ci / typecheck + lint   app=15368
+ci / test (node 26)     app=15368
+…
+```
+
+That is also what corrected this README, which said to require `ci`. The `ci /`
+prefix is the caller's job id, so a package repo that renames that job in its own
+`.github/workflows/ci.yml` changes the check name and has to edit
+`ci-required.json` to match. None of the seven do — the template names it `ci`.

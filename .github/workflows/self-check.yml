@@ -55,6 +55,21 @@ jobs:
       - name: Parse the wrapper action
         run: pnpm dlx js-yaml@4.1.0 actions/run-ci-script/action.yml > /dev/null
 
+      # Same bar, same reason, for the rulesets: nothing here consumes them, so a
+      # malformed file would first be seen as an unhelpful error in a package
+      # repository's settings UI, halfway through importing it by hand.
+      - name: Parse the rulesets
+        run: |
+          node --eval '
+            const fs = require("node:fs")
+            for (const f of fs.readdirSync("rulesets").filter((f) => f.endsWith(".json"))) {
+              const r = JSON.parse(fs.readFileSync(`rulesets/${f}`, "utf8"))
+              for (const k of ["name", "target", "enforcement", "rules"]) {
+                if (!(k in r)) throw new Error(`rulesets/${f}: missing "${k}"`)
+              }
+            }
+          '
+
   workflows:
     name: actionlint
     runs-on: ubuntu-latest

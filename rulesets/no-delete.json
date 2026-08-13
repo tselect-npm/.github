@@ -1,0 +1,18 @@
+{
+  "name": "no-delete",
+  "target": "branch",
+  "source_type": "Repository",
+  "enforcement": "active",
+  "conditions": {
+    "ref_name": {
+      "include": ["~DEFAULT_BRANCH"],
+      "exclude": []
+    }
+  },
+  "rules": [
+    {
+      "type": "deletion"
+    }
+  ],
+  "bypass_actors": []
+}
