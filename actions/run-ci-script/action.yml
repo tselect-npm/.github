@@ -1,0 +1,94 @@
+# The runner behind every job in `.github/workflows/ci.yml`.
+#
+# It provisions the toolchain, optionally installs dependencies, and executes one
+# of the TypeScript files in `scripts/ci/` with tsx. That collapses the four or
+# five near-identical setup steps each job used to repeat down to a single step,
+# and it is the reason a job body now reads as "check out, run this script".
+#
+# Scripts are reached through `github.action_path`, which points at this
+# directory inside the runner's `_actions` checkout of this repository. The whole
+# repository is fetched there, so `scripts/ci/` is available without the calling
+# workflow checking anything out.
+
+name: Run a @tselect CI script
+description: Provision Node + pnpm and execute a TypeScript CI script from this repository with tsx.
+
+inputs:
+  script:
+    description: 'File in `scripts/ci/` to execute, e.g. `build.ts`.'
+    required: true
+  node-version:
+    description: 'Node version to provision.'
+    required: true
+  inputs:
+    description: >-
+      The calling workflow's inputs as JSON, i.e. `toJSON(inputs)`. Reaches the
+      script as CI_INPUTS and is parsed by `scripts/ci/lib/inputs.ts`.
+    required: false
+    default: '{}'
+  needs:
+    description: >-
+      The calling job's `needs` context as JSON, i.e. `toJSON(needs)`. Only the
+      aggregate job uses this.
+    required: false
+    default: ''
+  install:
+    description: "Dependency install command. '' skips installing, for a job that only needs the lockfile."
+    required: false
+    default: ''
+  cache:
+    description: "Package manager whose store `actions/setup-node` should cache. '' disables caching."
+    required: false
+    default: pnpm
+  tsx-version:
+    description: 'Pinned tsx version. Fetched with `pnpm dlx`, so no repository carries it as a devDependency.'
+    required: false
+    default: '4.23.12'
+
+outputs:
+  result:
+    description: >-
+      Whatever the script published with `core.setResult()`, as a JSON string.
+      Read it with `fromJSON(... || '{}')` so a failed script does not break the
+      expression.
+    value: ${{ steps.run.outputs.result }}
+
+runs:
+  using: composite
+  steps:
+    # Order matters: pnpm must exist before setup-node's cache step looks for it.
+    #
+    # Corepack is deliberately not used — Node stopped shipping it at v25, so on a
+    # Node 26 runner `corepack` only resolves because the runner image happens to
+    # carry a global copy. That is an image detail, not a contract.
+    - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+      # No `version` input: it is read from `packageManager` in package.json.
+
+    - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      with:
+        node-version: ${{ inputs.node-version }}
+        # Skippable because `cache: pnpm` fails outright when there is no
+        # pnpm-lock.yaml — the state a repository is in while it still installs
+        # with `npm ci`.
+        cache: ${{ inputs.cache }}
+
+    - name: Install
+      if: inputs.install != ''
+      shell: bash
+      # Interpolated rather than passed through the environment because this is a
+      # whole command line, not a value. It comes from the reusable workflow's
+      # inputs, which only a caller in this organization can set.
+      run: ${{ inputs.install }}
+
+    - name: Run ${{ inputs.script }}
+      id: run
+      shell: bash
+      env:
+        # Values reach the script as environment variables so that nothing a
+        # caller controls is ever pasted into a command line.
+        SCRIPT: ${{ inputs.script }}
+        TSX_VERSION: ${{ inputs.tsx-version }}
+        ACTION_PATH: ${{ github.action_path }}
+        CI_INPUTS: ${{ inputs.inputs }}
+        CI_NEEDS: ${{ inputs.needs }}
+      run: pnpm dlx "tsx@$TSX_VERSION" "$ACTION_PATH/../../scripts/ci/$SCRIPT"

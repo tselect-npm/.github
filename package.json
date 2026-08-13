@@ -1,0 +1,20 @@
+{
+  "name": "@tselect/github",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Shared GitHub Actions workflows and CI scripts for the @tselect packages.",
+  "//": "`type: module` is load-bearing, not housekeeping: the runner checks this repository out under _actions and Node decides a .ts file's module format from the nearest package.json. Without it, tsx loads scripts/ci/*.ts as CommonJS and every import fails.",
+  "type": "module",
+  "packageManager": "pnpm@11.21.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "26.2.0",
+    "tsx": "4.23.12",
+    "typescript": "7.0.2"
+  }
+}

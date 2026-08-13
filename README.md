@@ -11,6 +11,7 @@ their CI logic is allowed to be shared.
 | Workflow | Purpose |
 | --- | --- |
 | [`ci.yml`](.github/workflows/ci.yml) | Typecheck · lint · test + coverage · build · audit, across the supported Node matrix |
+| [`self-check.yml`](.github/workflows/self-check.yml) | Typechecks the CI scripts and lints the workflows in this repository |
 
 ---
 
@@ -97,6 +98,7 @@ its migration can adopt the workflow before it has every script.
 | `test-script` | `test` | Only used when `coverage-script` is `''` |
 | `build-script` | `build` | `''` skips the whole build job |
 | `install-command` | `pnpm install --frozen-lockfile` | |
+| `cache` | `pnpm` | Package manager store `actions/setup-node` caches. Set to `''` for a repo with no `pnpm-lock.yaml`, where `cache: pnpm` fails outright |
 
 ### Coverage
 
@@ -125,9 +127,102 @@ its migration can adopt the workflow before it has every script.
 
 ### Pinned tool versions
 
-`es-check-version` (`9.6.4`) and `attw-version` (`0.18.5`) are fetched with
-`pnpm dlx`, so they are pinned here rather than added as a devDependency to seven
-repos.
+`es-check-version` (`9.6.4`), `attw-version` (`0.18.5`) and `tsx-version`
+(`4.23.12`) are fetched with `pnpm dlx`, so they are pinned here rather than
+added as a devDependency to seven repos. `tsx` is the one that runs the job
+scripts themselves; pinning it means a job cannot change behaviour without a
+commit in this repository.
+
+---
+
+## How it is put together
+
+Each job's logic is a TypeScript file. `ci.yml` holds the wiring — the matrix,
+the inputs, and the marketplace actions that have to be steps — and nothing else.
+
+```
+.github/workflows/ci.yml           the reusable workflow: matrix, inputs, wiring
+actions/run-ci-script/action.yml   provisions Node + pnpm, runs a script with tsx
+scripts/ci/
+  test.ts        static.ts        build.ts        audit.ts        aggregate.ts
+  lib/
+    core.ts      the slice of @actions/core these scripts use (annotations,
+                 groups, job summary, step outputs)
+    exec.ts      child processes, with the command echoed
+    files.ts     walking the build output
+    inputs.ts    the workflow's inputs, typed
+    steps.ts     run every step, report every failure
+```
+
+A job now reads as "check out, run this script":
+
+```yaml
+static:
+  steps:
+    - uses: actions/checkout@<sha>
+    - uses: tselect-npm/.github/actions/run-ci-script@v1
+      with:
+        script: static.ts
+        node-version: ${{ inputs.primary-node-version }}
+        install: ${{ inputs.install-command }}
+        inputs: ${{ toJSON(inputs) }}
+```
+
+### Why not keep it in `run:` blocks
+
+The build job was 80 lines of bash embedded in YAML: quoting rules from two
+languages at once, `set -euo pipefail` repeated per step, control flow spread
+across `if:` expressions, and no way to check any of it short of pushing a
+commit and watching a runner. The same logic in TypeScript is typechecked by
+`tsc --noEmit` in [`self-check.yml`](.github/workflows/self-check.yml), reads
+top to bottom, and can be run locally against a real package before it ever
+reaches a runner.
+
+Two behaviours got *better* rather than merely relocated:
+
+- **Failure collection.** The `if: ${{ !cancelled() && … }}` chain that made
+  later gates run after an earlier failure is now [`steps.ts`](scripts/ci/lib/steps.ts).
+  Same behaviour — one push surfaces every problem — but the intent is a method
+  name instead of an expression to re-derive on every step.
+- **The aggregate job** parses `toJSON(needs)` instead of grepping it for
+  `"result": "failure"`, so a match can no longer come from somewhere other than
+  the field being tested.
+
+### How the scripts reach the runner
+
+`actions/run-ci-script` is a composite action in *this* repository. When a job
+references it, the runner clones this repository into its `_actions` directory,
+so `scripts/ci/` is reachable through `github.action_path` — the calling
+workflow never checks this repository out. tsx is fetched with `pnpm dlx` at a
+pinned version, so no package repository carries it as a dependency.
+
+Everything the scripts need arrives as one `${{ toJSON(inputs) }}` blob, read
+back through [`inputs.ts`](scripts/ci/lib/inputs.ts). Adding an input to `ci.yml`
+and a field to that interface is the whole wiring — there is no per-input `env:`
+to thread through a step.
+
+Anything a script needs to hand *back* goes through `core.setResult()`, which a
+composite action can only expose as a statically declared output. There is one,
+called `result`, carrying JSON; the build job uses it to tell the workflow
+whether a tarball exists to upload.
+
+### The wrapper is referenced at `@v1` too
+
+`ci.yml` references the action as `tselect-npm/.github/actions/run-ci-script@v1`
+— a full `owner/repo/path@ref`, because inside a reusable workflow `./actions/…`
+would resolve against the *caller's* checkout, not this repository.
+
+Both live here, so a caller on `v1` gets the workflow and the action from one
+commit, and moving `v1` moves both together. The corollary is a bootstrapping
+wrinkle worth knowing before you edit the action: **a pull request against this
+repository cannot exercise its own changes to the wrapper**, because the workflow
+under review still resolves the action at whatever `v1` currently points to. To
+test a change, push a scratch tag and point a caller at it:
+
+```bash
+git tag -f v1-test && git push -f origin v1-test
+# then, in a package repo, temporarily: uses: tselect-npm/.github/.github/workflows/ci.yml@v1-test
+```
 
 ---
 
@@ -146,9 +241,10 @@ asserted from one local Node and reasoned about. Now it is executed.
 ### `typecheck + lint` — one job, both results
 
 These packages are tiny (`url` is 163 LOC), so a second runner costs more in
-setup than it saves in wall-clock. They share a job, but the lint step carries
-`if: ${{ !cancelled() }}` — a typecheck failure still reports the lint result, so
-one push surfaces every problem instead of one per round-trip.
+setup than it saves in wall-clock. They share a job, and
+[`static.ts`](scripts/ci/static.ts) runs both regardless of the first one's
+result — a typecheck failure still reports the lint result, so one push surfaces
+every problem instead of one per round-trip.
 
 Biome's `check` covers linting *and* formatting, so a single `pnpm lint` serves
 both concerns. `biome ci` was considered — it is the CI-oriented variant, never
@@ -203,9 +299,19 @@ not here yet.
 ### `ci` — the aggregate
 
 One stable check name for branch protection. `needs` alone is not sufficient: a
-skipped dependency counts as satisfied, so the job inspects `needs` explicitly
-and treats `skipped` as allowed (the caller turned that job off) but `failure`
-and `cancelled` as fatal.
+skipped dependency counts as satisfied, so
+[`aggregate.ts`](scripts/ci/aggregate.ts) inspects `needs` explicitly and treats
+`skipped` as allowed (the caller turned that job off) but `failure` and
+`cancelled` as fatal. Anything that is neither an explicit pass nor an explicit
+skip is a failure, so a result GitHub adds later cannot quietly go green.
+
+It also writes the per-job table to the run's summary, which is the fastest way
+to see *which* job failed without opening the matrix.
+
+This is the one job whose setup costs more than its work: it only reads an
+expression context, but it still checks out and provisions pnpm so it goes
+through the same wrapper as everything else. Roughly 20 seconds, spent to avoid
+having one job that is different for no reason a reader can see.
 
 ---
 
@@ -295,10 +401,20 @@ Step order matters: pnpm is installed *before* `actions/setup-node`, because
 
 ### Actions are pinned to commit SHAs
 
-Every `uses:` in `ci.yml` is pinned to a full commit SHA with the tag in a
-trailing comment. Seven repos delegate their CI here; a moved tag upstream should
-not be able to change what runs in all of them. [Dependabot](.github/dependabot.yml)
-keeps the pins current — a pin nobody updates is just an old version.
+Every third-party `uses:` is pinned to a full commit SHA with the tag in a
+trailing comment — in `ci.yml`, in `self-check.yml`, and in the wrapper action.
+Seven repos delegate their CI here; a moved tag upstream should not be able to
+change what runs in all of them. [Dependabot](.github/dependabot.yml) keeps the
+pins current — a pin nobody updates is just an old version.
+
+Dependabot needs an entry per directory containing a manifest, so
+`actions/run-ci-script` is listed separately. Without it the pins inside the
+wrapper would be the ones nobody ever updates.
+
+The exception is `run-ci-script@v1` itself, which is pinned to a tag rather than
+a SHA. It is not third-party — it is this repository, resolved from the same tag
+the caller already chose. See
+[The wrapper is referenced at `@v1` too](#the-wrapper-is-referenced-at-v1-too).
 
 ### Coverage goes to Coveralls
 
@@ -339,6 +455,7 @@ jobs:
     uses: tselect-npm/.github/.github/workflows/ci.yml@v1
     with:
       install-command: npm ci
+      cache: ''                   # `cache: pnpm` errors with no pnpm-lock.yaml
       typecheck-script: ''        # no typecheck script yet
       coverage-script: ''         # nyc is not wired to lcov
       es-check-target: ''         # single-format tsc output, nothing to assert
@@ -351,12 +468,25 @@ caller file a visible progress bar for that repo. Once a repo is on pnpm but not
 yet off mocha/nyc, re-enable `audit` with `audit-blocking: false` so the
 remaining advisories are reported without blocking.
 
-Note that `pnpm/action-setup` still runs even with `install-command: npm ci`;
-that is harmless, since it only puts pnpm on `PATH`.
+**The repo must declare `packageManager` in its `package.json`, even on npm.**
+`pnpm/action-setup` runs in every job and takes no `version` input here — it
+reads that field, and has nothing to fall back on if it is absent. This was
+already true before the jobs moved to TypeScript, but it matters more now:
+`pnpm dlx tsx` is what runs them, so pnpm is no longer merely on `PATH` and
+unused. A single `"packageManager": "pnpm@11.21.0"` line is enough — it does not
+commit the repo to installing with pnpm, and `install-command: npm ci` keeps
+working alongside it.
+
+`cache: ''` is the one line that is not optional in that shape.
+`actions/setup-node` with `cache: pnpm` **fails the job** when there is no
+`pnpm-lock.yaml`, rather than skipping the cache, so a repo still installing with
+`npm ci` has to turn it off explicitly.
 
 ---
 
 ## Verification
+
+### The original workflow
 
 `ci.yml` was exercised through `workflow_call` against a temporary copy of
 `tselect-npm/url` at the tip of its modernization stack (`fb04963`), in both the
@@ -379,3 +509,28 @@ The one path not exercised is the Coveralls upload, which was disabled during
 testing so it would not create a Coveralls project for this repository. It is
 `fail-on-error: false`, so the worst case is a missing report rather than a red
 build.
+
+### The TypeScript scripts
+
+Every script was run locally against the real `tselect-npm/url` working tree —
+which is the point of the refactor, and was not possible when the same logic
+lived in `run:` blocks. Both the passing and the failing branch of each gate:
+
+| Script | Exercised |
+| --- | --- |
+| `test.ts` | `cov` (23 tests, 100%); fallback to `test` with `coverage-script: ''`; both empty → exit 1 |
+| `static.ts` | typecheck + lint green; `lint-script: ''` reported as skipped |
+| `build.ts` | full green path — build, 2 JS + 2 declarations asserted, `es-check es2015` on `.cjs` and `.mjs`, pack, tarball listing to the summary, `attw` *No problems found*, `result` written to `GITHUB_OUTPUT` |
+| `build.ts` | `es-check-target: es5` → that gate fails, **pack and attw still run**, exit 1 |
+| `build.ts` | missing build script → remaining gates correctly abort, exit 1 |
+| `audit.ts` | clean pass; non-zero audit with `audit-blocking: true` → `::error::` + exit 1, and with `false` → `::warning::` + exit 0 |
+| `aggregate.ts` | all-success-and-skipped → exit 0; `failure` + `cancelled` → exit 1 naming both |
+
+Plus `tsc --noEmit` over `scripts/`, `actionlint` 1.7.12 clean over both
+workflows, and `action.yml` parsed.
+
+> **Not yet exercised on a runner.** The wrapper action's own wiring —
+> `github.action_path` resolution, the composite `outputs.result` plumbing,
+> `cache: ''` — cannot run until a tag points at a commit containing it, for the
+> reason in [The wrapper is referenced at `@v1` too](#the-wrapper-is-referenced-at-v1-too).
+> Push a scratch tag and run one package repo against it before moving `v1`.

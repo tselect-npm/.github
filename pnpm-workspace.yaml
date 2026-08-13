@@ -1,0 +1,11 @@
+# pnpm 11 refuses to run a dependency's build scripts unless it is named here.
+#
+# tsx bundles esbuild, whose install script unpacks the platform binary; without
+# this, `pnpm install` fails outright. Same shape as the packages' own
+# pnpm-workspace.yaml files.
+#
+# Nothing in this repository is published, and CI fetches tsx with `pnpm dlx`
+# rather than from this lockfile — these dependencies exist so the CI scripts can
+# be typechecked and edited with a working language server.
+allowBuilds:
+  esbuild: true

@@ -1,0 +1,73 @@
+# CI for the CI.
+#
+# The reusable workflow cannot run against this repository — there is no package
+# here to build, test or publish — so the parts of it that *can* be checked are
+# checked directly: the TypeScript the jobs execute, and the YAML that wires them
+# together.
+#
+# This exists because moving the job bodies out of bash only pays off if the
+# TypeScript is actually typechecked. Otherwise it trades one kind of silent
+# failure for another, discovered in whichever of the seven repositories runs
+# next.
+
+name: Self-check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: self-check-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  # tsx strips types rather than checking them, so nothing in scripts/ci/ is
+  # verified at run time. `tsc --noEmit` is the only thing standing between a
+  # typo here and a red build in one of the seven package repositories.
+  scripts:
+    name: typecheck CI scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          # The floor of the matrix these scripts run on in the package repos.
+          node-version: '22'
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm run typecheck
+
+      # actionlint reads .github/workflows/ only — it does not validate composite
+      # `action.yml` files, so a malformed wrapper would otherwise surface for the
+      # first time in whichever package repository ran CI next. Parsing is a low
+      # bar, but it is the bar that catches a bad edit.
+      - name: Parse the wrapper action
+        run: pnpm dlx js-yaml@4.1.0 actions/run-ci-script/action.yml > /dev/null
+
+  workflows:
+    name: actionlint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # shellcheck over every `run:` block, plus expression syntax and `uses:`
+      # references. Covers .github/workflows/ only; the wrapper action is parsed
+      # in the job above.
+      #
+      # Pinned by image digest rather than tag, for the same reason every
+      # `uses:` in ci.yml is pinned to a commit SHA.
+      - name: Lint workflows
+        uses: docker://rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 # 1.7.12
+        with:
+          args: -color
