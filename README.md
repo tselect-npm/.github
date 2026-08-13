@@ -11,11 +11,13 @@ their CI logic is allowed to be shared.
 | Workflow | Purpose |
 | --- | --- |
 | [`ci.yml`](.github/workflows/ci.yml) | Typecheck · lint · test + coverage · build · audit, across the supported Node matrix |
-| [`self-check.yml`](.github/workflows/self-check.yml) | Typechecks the CI scripts, lints the workflows, and parses the rulesets |
+| [`publish.yml`](.github/workflows/publish.yml) | Manually triggered release: infer the version from gitmoji, gate on approval, tag, publish to npm |
+| [`self-check.yml`](.github/workflows/self-check.yml) | Typechecks the CI scripts, lints the workflows, and parses the rulesets and environments |
 
 Alongside them, [`rulesets/`](rulesets/) holds four importable branch rulesets —
-one protection per file, so each can be disabled on its own. See
-[Rulesets](#rulesets).
+one protection per file, so each can be disabled on its own — and
+[`environments/`](environments/) holds the deployment environment that decides who
+may approve a release. See [Rulesets](#rulesets) and [Publishing](#publishing).
 
 ---
 
@@ -83,6 +85,253 @@ The four rulesets in [`rulesets/`](rulesets/) are the ready-made version of this
 
 ---
 
+## Publishing
+
+[`publish.yml`](.github/workflows/publish.yml) releases a package **from CI and
+nowhere else**. Once a package is set up for trusted publishing there is no npm
+token in existence for it, so a laptop cannot publish even by accident.
+
+A release is one click in a repo's **Actions → Publish → Run workflow**, and the
+run does the rest: read the bump out of the gitmoji since the last release, stop
+for an approval from the shortlist, bump `package.json`, commit and tag on the
+release branch, publish.
+
+The caller goes in each package repo as `.github/workflows/publish.yml`:
+
+```yaml
+name: Publish
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: 'Version bump. `auto` reads it from the gitmoji since the last release.'
+        type: choice
+        options: [auto, patch, minor, major]
+        default: auto
+      dry-run:
+        type: boolean
+        default: false
+      dist-tag:
+        type: string
+        default: latest
+      since-ref:
+        description: 'Count commits from here instead of the tag matching the published version.'
+        type: string
+        default: ''
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false     # never cancel a release — see "Ordering" below
+
+jobs:
+  publish:
+    permissions:
+      contents: write   # push the release commit and the tag
+      id-token: write   # mint the OIDC token npm exchanges for publish rights
+    uses: tselect-npm/.github/.github/workflows/publish.yml@v1
+    with:
+      bump: ${{ inputs.bump }}
+      dry-run: ${{ inputs.dry-run }}
+      dist-tag: ${{ inputs.dist-tag }}
+      since-ref: ${{ inputs.since-ref }}
+```
+
+Every dispatch input is forwarded rather than left to the reusable workflow's
+default. An input the caller does not forward cannot be set at all — the run
+form is the caller's, so a reusable-workflow input with no caller counterpart is
+unreachable in practice.
+
+### Two rules that are not obvious and fail identically
+
+Both produce a `404` from the registry that says nothing about the actual cause,
+so they are worth knowing before debugging one.
+
+* **The caller must be named `publish.yml`.** npm's trusted publisher config
+  names one workflow file per package, and for a reusable workflow npm validates
+  the **caller's** filename, not the reusable one. All seven callers are
+  therefore identically named — this is the one file in the organization whose
+  name is load-bearing.
+* **`id-token: write` is required in the caller too.** A called workflow can only
+  narrow the permissions it was given, never widen them, so a caller that leaves
+  it out produces a job with no OIDC token at all. That is why the template sets
+  permissions explicitly instead of relying on the repository default.
+
+### How the version is decided
+
+The bump comes from the gitmoji in the commit subjects since the last release —
+the same bet semantic-release makes on Conventional Commits, with the marker
+these histories have actually used since 2016. The table lives in
+[`gitmoji.ts`](scripts/ci/lib/gitmoji.ts); its shape is:
+
+| Level | Markers |
+| --- | --- |
+| `major` | `:boom:`, or a `BREAKING CHANGE:` trailer in the body |
+| `minor` | `:sparkles:`, `:tada:` |
+| `patch` | `:bug:`, `:lock:`, `:zap:`, `:recycle:`, `:arrow_up:`, `:fire:`, … — anything a consumer can observe |
+| *nothing* | `:memo:`, `:white_check_mark:`, `:construction_worker:`, `:wrench:`, `:bookmark:`, … — tooling and docs |
+
+Three deliberate choices in it:
+
+* **Only `:boom:` infers a major.** gitmoji has no other unambiguous breaking
+  marker, and guessing one from `:fire:` (remove code) or `:truck:` (rename
+  resources) would put a consumer's install on the line. Those two are warned
+  about instead.
+* **Unrecognized subjects count as a patch**, not as nothing, and are warned
+  about by name. Someone has already decided to publish by the time this runs;
+  silently discounting a commit is the worse failure.
+* **A range of nothing but tooling commits is an error**, not a no-op release. It
+  asks for an explicit bump rather than guessing.
+
+**The `bump` override is not an escape hatch — it is a required part of the
+design.** The sharpest edge in the table is that `:wrench:` releases nothing,
+and the pilot's `:wrench: Declare engines.node >=22` *is* a breaking change under
+the support policy. Raising the runtime floor, changing an `exports` map and
+dropping an export are all breaking regardless of the emoji in front of them.
+**All seven modernization majors therefore ship with `bump: major` chosen
+explicitly**, and the plan job prints the inference it overrode.
+
+### The base version is `package.json`, not the newest tag
+
+This is backwards from what a release tool usually assumes, and these
+repositories force it. `url`'s tags run to `v3.0.0-beta.2` from its `@bluejay/url`
+days, while the registry serves `@tselect/url@1.0.0` and `package.json` says
+`1.0.0`. Inferring the base from `git describe` would propose `3.0.0` for a
+package whose latest published version is `1.0.0`.
+
+package.json is what was published, so package.json is the base. The **tags** are
+only used to bound the commit range, in this order: `since-ref` if given, then a
+tag matching the published version (with and without the `v` — `url` has a bare
+`1.0.0` next to a `v2.0.1`), then the newest reachable semver tag, then the whole
+history. Each fallback warns louder than the last.
+
+> **The pre-`@tselect` tags have to be cleared before a repo's first release**,
+> and the fix is the same everywhere. The `@bluejay` era left tags that the
+> `@tselect` line is now walking back into: `v2.0.0` — the exact tag a
+> modernization major wants — existed in `url`, `access-control`, `countries` and
+> `http-method`. The plan job refuses to move a tag, so this is a red plan job
+> until it is settled.
+>
+> **The registry says where the real tag belongs.** npm records the commit each
+> version was published from, so this is a lookup rather than a guess:
+>
+> ```console
+> $ npm view @tselect/url@1.0.0 gitHead
+> de093bb54ecba3a0c84d31badd26654708631454   # :sparkles: Cleanup and migrate to tselect
+> ```
+>
+> Delete the obsolete tags, then tag *that* commit `v1.0.0`. The published
+> version and the tag naming it now agree, which is the assumption the whole
+> range resolution rests on — and `since-ref` stops being necessary, because the
+> tag matching the published version is found on the first try.
+>
+> `url` was done this way (2026-08-13): seven `@bluejay` tags removed, `v1.0.0`
+> created at `de093bb`. The range went from 24 commits reaching back into a
+> foreign lineage to the 9 that are actually the modernization. **`access-control`,
+> `countries` and `http-method` still need it**, as part of their step 8.
+
+### Ordering, and what a failure leaves behind
+
+The tag is pushed **before** `pnpm publish`. Neither order is atomic, so the
+choice is about which half-done state is recoverable:
+
+| Order | If it fails in between |
+| --- | --- |
+| Publish, then tag | A version on the registry that no commit is tagged with. npm forbids republishing a version, so the only way out is to bump past it — the version number is burned. |
+| **Tag, then publish** | A tag and a `:bookmark:` commit on `main` for a version the registry does not have. **Re-running the workflow fixes it.** |
+
+Re-running is the recovery procedure, and the scripts are built for it: the plan
+job notices the manifest version was never published and proposes *that* version
+again rather than bumping past it, and every mutation in the publish job is
+skipped when it has already happened.
+
+What makes the ordering tolerable is the rehearsal: `pnpm publish --dry-run` runs
+`prepublishOnly` — lint, coverage, build — and packs the tarball **before**
+anything is pushed. The overwhelmingly likely reasons a publish fails have
+already happened by then.
+
+Two more things the publish job does not take on trust:
+
+* **The plan still describes this checkout.** An approval can sit for hours. The
+  job re-reads HEAD and fails if the branch moved, so a commit merged during the
+  approval window cannot ride out under a version inferred without it.
+* **The registry is asked whether the publish landed.** Same rule the build job
+  follows: a publish that reports success and did not land is a failure these
+  packages have already met.
+
+### Environments — who may release
+
+[`environments/npm-publish.json`](environments/npm-publish.json) is the
+environment the publish job runs in, in the shape the REST API takes. As with the
+rulesets, nothing consumes it automatically; it is the reviewed source of truth
+for a setting that otherwise lives only in seven Settings tabs where nobody can
+diff it.
+
+Two of its fields are the whole access-control story:
+
+* `reviewers` — **the shortlist.** Only these people can approve a release.
+* `deployment_branch_policy` — the environment, and with it the OIDC token, is
+  not handed to a job running from an unprotected branch.
+
+`prevent_self_review: true` means whoever starts a release cannot approve it, so
+**the shortlist needs at least two people to be workable.** Drop it to `false` for
+a one-maintainer package, knowingly.
+
+> **What this does and does not restrict.** GitHub has no way to limit who may
+> *trigger* a `workflow_dispatch` — anyone with write access can start a release.
+> What the environment gates is everything that follows: the run stops at the
+> plan and goes no further without an approval from the list, and the OIDC token
+> npm requires does not exist until then. Approval is the gate, not triggering.
+> That is also why the plan job runs *outside* the environment: the version, the
+> tag and the commits behind them are on screen before the approval is requested,
+> instead of the reviewer signing a blank cheque.
+
+Replace the placeholder id, then apply it per repo — the ids are numeric, not
+logins:
+
+```bash
+gh api /orgs/tselect-npm/teams/<slug> --jq .id      # or /users/<login>
+gh api -X PUT repos/tselect-npm/<repo>/environments/npm-publish \
+  --input environments/npm-publish.json
+```
+
+### The npm side
+
+Per package, once, at **npmjs.com → the package → Settings → Trusted publisher**:
+
+| Field | Value |
+| --- | --- |
+| Publisher | GitHub Actions |
+| Organization | `tselect-npm` |
+| Repository | the package's repo |
+| Workflow filename | `publish.yml` — the **caller's** name |
+| Environment | `npm-publish` |
+| Allowed actions | `npm publish` (configs created after 2026-05-20 must pick at least one) |
+
+Then **revoke the classic npm token**, which is the step that makes "CI and
+nowhere else" true rather than aspirational.
+
+Trusted publishing cannot create a package's *first* version, so it works here
+only because all seven already exist on the registry. It also does not stop an
+attacker who lands a commit — a malicious commit would ship with a valid
+provenance attestation. The rulesets, the required review and the approval
+shortlist are what cover that; provenance covers the build, not the source.
+
+### The release commit needs a ruleset bypass
+
+The publish job pushes a `:bookmark: X.Y.Z` commit straight to the release
+branch, which `pr-required` forbids. That is why the GitHub Actions app is listed
+as a bypass actor in [`pr-required.json`](rulesets/pr-required.json) — see
+[Rulesets](#rulesets) for why that is the only bypass in the four. Two
+consequences worth knowing:
+
+* A push authenticated with `GITHUB_TOKEN` does **not** trigger workflows, so the
+  release commit will not start a CI run of its own. Nothing loops.
+* The bypass is scoped to that app, not to a person, and the only workflow that
+  uses it is this one — every other path to `main` is still a pull request.
+
+---
+
 ## Rulesets
 
 [`rulesets/`](rulesets/) holds four repository rulesets as importable JSON, one
@@ -118,11 +367,21 @@ once means turning off the PR requirement and the CI gate at the same time. Spli
 one-per-file, each protection is disabled and re-enabled on its own, and the
 repo's rules list reads as four named lines rather than one opaque entry.
 
-That granularity is the reason **`bypass_actors` is empty in all four**. A
-standing `OrganizationAdmin` bypass would make every rule advisory for the only
-person who pushes here, which is the same as not having them. The escape hatch is
-to set that one ruleset to **Disabled**, do the thing, and set it back — visible
-in the ruleset's history, unlike a silent bypass.
+That granularity is the reason **`bypass_actors` carries no human**. A standing
+`OrganizationAdmin` bypass would make every rule advisory for the only person who
+pushes here, which is the same as not having them. The escape hatch is to set that
+one ruleset to **Disabled**, do the thing, and set it back — visible in the
+ruleset's history, unlike a silent bypass.
+
+The single exception is the **GitHub Actions app (`15368`) on `pr-required`**,
+added so [`publish.yml`](.github/workflows/publish.yml) can push its
+`:bookmark: X.Y.Z` release commit to the branch. It is worth being clear about
+what it widens: any workflow in the repo with `contents: write` can now push to
+the default branch. What keeps that narrow is that a workflow is itself code that
+had to land through a pull request, and the only one using it stops for an
+approval first. The other three rulesets — including `no-force-push` and
+`no-delete` — have no bypass at all, so the release commit can be added but never
+rewritten away.
 
 ### Importing
 
@@ -222,17 +481,27 @@ the inputs, and the marketplace actions that have to be steps — and nothing el
 
 ```
 .github/workflows/ci.yml           the reusable workflow: matrix, inputs, wiring
+.github/workflows/publish.yml      the reusable release: plan, approve, tag, publish
 actions/run-ci-script/action.yml   provisions Node + pnpm, runs a script with tsx
 scripts/ci/
   test.ts        static.ts        build.ts        audit.ts        aggregate.ts
+  publish-plan.ts                  decide the release; change nothing
+  publish.ts                       bump, commit, tag, push, publish
   lib/
     core.ts      the slice of @actions/core these scripts use (annotations,
                  groups, job summary, step outputs)
     exec.ts      child processes, with the command echoed
     files.ts     walking the build output
-    inputs.ts    the workflow's inputs, typed
+    git.ts       the git the release does, kept mechanical
+    gitmoji.ts   the gitmoji → major/minor/patch table
+    inputs.ts    each workflow's inputs, typed
+    semver.ts    parse and increment a version, without the dependency
     steps.ts     run every step, report every failure
 ```
+
+The release scripts sit in `scripts/ci/` with the rest rather than in a directory
+of their own: the wrapper action resolves scripts relative to that one path, and a
+second location would mean a second wrapper input for no gain.
 
 A job now reads as "check out, run this script":
 
@@ -288,10 +557,12 @@ whether a tarball exists to upload.
 
 ### The wrapper is pinned to an immutable version tag
 
-`ci.yml` references the action as
-`tselect-npm/.github/actions/run-ci-script@v1.1.0` — a full
+`ci.yml` and `publish.yml` reference the action as
+`tselect-npm/.github/actions/run-ci-script@v1.2.0` — a full
 `owner/repo/path@ref` at an **immutable** tag, bumped in the same commit that
-then receives that tag.
+then receives that tag. Both workflows move together: they ship from one
+repository, so a wrapper change is released once and every reference to it goes
+to the new version in that same commit.
 
 That looks redundant when the workflow and the action ship from one repository,
 and the two more obvious forms were both tried on a real runner first. Both fail:
@@ -316,8 +587,8 @@ review instead of implicit in a tag that moves later.
 That makes the order matter:
 
 ```bash
-# 1. On the branch, with the ci.yml ref already bumped to the new version:
-git tag -f v1.1.0 && git push -f origin v1.1.0     # the wrapper now resolves
+# 1. On the branch, with the workflows' wrapper refs already bumped:
+git tag -f v1.2.0 && git push -f origin v1.2.0     # the wrapper now resolves
 git tag -f v1-test && git push -f origin v1-test   # the workflow, for the probe
 
 # 2. In one package repo, on a throwaway branch, point the caller at the probe:
@@ -331,11 +602,19 @@ git tag -f v1 && git push -f origin v1
 git push origin :refs/tags/v1-test                 # tidy up
 ```
 
-Force-moving `v1.1.0` during step 3 is fine — nothing consumes it until `v1`
+Force-moving `v1.2.0` during step 3 is fine — nothing consumes it until `v1`
 moves. Once it does, treat it as immutable.
 
 A package repo's probe branch is disposable and should never be merged; the
 caller file on `main` always points at `v1`.
+
+**Probing `publish.yml` needs one change to that recipe.** It is
+`workflow_dispatch`, so a pull request does not trigger it — the probe caller has
+to be on the *default* branch of the package repo to be dispatchable at all, and
+`dry-run: true` is what makes running it safe. A dry run still requires the
+environment approval and still performs the full rehearsal (`prepublishOnly` and
+the pack), then stops before the commit, the tag, the push and the publish. It is
+the only way to exercise the approval path without burning a version.
 
 ---
 
@@ -686,3 +965,58 @@ That is also what corrected this README, which said to require `ci`. The `ci /`
 prefix is the caller's job id, so a package repo that renames that job in its own
 `.github/workflows/ci.yml` changes the check name and has to edit
 `ci-required.json` to match. None of the seven do — the template names it `ci`.
+
+### The release workflow
+
+`publish.yml` has not been run on a runner, and the parts that can only be
+verified there are called out below. What was verified was verified the way the
+CI scripts were — by running them against a real working tree.
+
+`publish-plan.ts` was run against the real `tselect-npm/url` checkout on `main`,
+which is what surfaced two findings that are now documented rather than
+discovered later:
+
+- With `bump: auto` it inferred `minor` (from two `:sparkles:` commits) and then
+  **refused the release** — `v1.1.0 already exists at 75d78bf`. That was the
+  `@bluejay`-era tag collision, since fixed for this repo by the retagging
+  described above.
+- The commit range reached back **24 commits** into the `@bluejay` history,
+  because the tag matching the published `1.0.0` was bluejay's `1.0.0`. Also
+  fixed by the retagging — the range is now the 9 modernization commits.
+
+Both were found by running the script, not by reading it, which is the argument
+for these jobs being TypeScript. Re-run after the retag, with `bump: major` and
+no `since-ref`, it resolves cleanly: `Counting commits since v1.0.0, the tag for
+the published version` → 9 commits → `@tselect/url: 1.0.0 → 2.0.0`, with the
+override reported as `major, chosen explicitly (gitmoji implied minor)` and no
+warnings.
+
+The classification was checked against all 24 commits of the wider range —
+`:wrench:`, `:bookmark:` and `:construction_worker:` as no-release, `:sparkles:`
+as minor, `:arrow_up:` and `:recycle:` as patch, and `Update README.md` flagged
+as an unrecognized subject counted as a patch. No tag was created; the plan job
+writes nothing.
+
+`semver.ts` and `gitmoji.ts` were checked case by case, including the ones most
+likely to be wrong:
+
+| Case | Result |
+| --- | --- |
+| `3.0.0-beta.2` + patch / minor / major | `3.0.0` in all three — a prerelease is *on the way to* its version, not before the next one |
+| `1.2.0-beta.1` + patch vs `1.2.3-beta.1` + patch | `1.2.0` vs `1.2.4` — the prerelease is only absorbed when the parts below the bump are zero |
+| `1.0.0+build`, `1.0`, `x` | rejected rather than coerced |
+| `:bug: Fix the :boom: handler` | `patch` — only the *first* token classifies, so a gitmoji in prose cannot force a major |
+| `💥` vs `:boom:` | both `major` |
+| `:wrench: Declare engines.node >=22` | `none` — the documented sharp edge |
+| the same, with a `BREAKING CHANGE:` body trailer | `major` |
+
+Plus `tsc --noEmit` over `scripts/`, and `publish.yml`, `action.yml` and both new
+callers parsed as YAML.
+
+**Not verified, and each needs a runner or the registry:** the OIDC exchange with
+npm, and with it the claim that a reusable workflow validates against the
+*caller's* filename (documented by npm, untested here); the environment approval
+gate; the `contents: write` push against a `pr-required` branch with the Actions
+app as a bypass actor; and `publish.ts` end to end, which has never run. The
+first release of the first package is the real test of all five — do it with
+`dry-run: true` first, which exercises everything except the four mutations.

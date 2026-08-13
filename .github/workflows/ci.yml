@@ -170,7 +170,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: tselect-npm/.github/actions/run-ci-script@v1.1.0
+      - uses: tselect-npm/.github/actions/run-ci-script@v1.2.0
         with:
           script: test.ts
           node-version: ${{ matrix.node }}
@@ -207,7 +207,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: tselect-npm/.github/actions/run-ci-script@v1.1.0
+      - uses: tselect-npm/.github/actions/run-ci-script@v1.2.0
         with:
           script: static.ts
           node-version: ${{ inputs.primary-node-version }}
@@ -229,7 +229,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: tselect-npm/.github/actions/run-ci-script@v1.1.0
+      - uses: tselect-npm/.github/actions/run-ci-script@v1.2.0
         id: build
         with:
           script: build.ts
@@ -267,7 +267,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: tselect-npm/.github/actions/run-ci-script@v1.1.0
+      - uses: tselect-npm/.github/actions/run-ci-script@v1.2.0
         with:
           script: audit.ts
           node-version: ${{ inputs.primary-node-version }}
@@ -292,7 +292,7 @@ jobs:
       # different?" than the ~20s of setup it saves.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: tselect-npm/.github/actions/run-ci-script@v1.1.0
+      - uses: tselect-npm/.github/actions/run-ci-script@v1.2.0
         with:
           script: aggregate.ts
           node-version: ${{ inputs.primary-node-version }}

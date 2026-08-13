@@ -69,6 +69,25 @@ export function capture(command: string, args: string[]): string {
   return result.stdout;
 }
 
+/**
+ * Run a command and return its stdout, or null if it exited non-zero.
+ *
+ * For the cases where "it failed" is an answer rather than a problem: whether a
+ * tag exists, whether the registry already carries a version. `capture` throws
+ * there, and a try/catch around an expected outcome reads as if something went
+ * wrong. stderr is swallowed for the same reason — a `404` from `pnpm view` is
+ * the result, not an error worth putting in the log.
+ */
+export function tryCapture(command: string, args: string[]): string | null {
+  const result = spawnSync(command, args, { encoding: 'utf8' });
+
+  if (result.error || result.status !== 0) {
+    return null;
+  }
+
+  return result.stdout;
+}
+
 /** `pnpm run <script>` — the script name comes from a workflow input. */
 export function pnpmRun(script: string, options: RunOptions = {}): number {
   return run('pnpm', ['run', script], options);

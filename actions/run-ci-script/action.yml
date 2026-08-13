@@ -32,6 +32,12 @@ inputs:
       aggregate job uses this.
     required: false
     default: ''
+  plan:
+    description: >-
+      The release plan as JSON, i.e. the `plan` job's `result` output. Reaches the
+      script as CI_PLAN. Only the publish job uses this.
+    required: false
+    default: ''
   install:
     description: "Dependency install command. '' skips installing, for a job that only needs the lockfile."
     required: false
@@ -91,4 +97,5 @@ runs:
         ACTION_PATH: ${{ github.action_path }}
         CI_INPUTS: ${{ inputs.inputs }}
         CI_NEEDS: ${{ inputs.needs }}
+        CI_PLAN: ${{ inputs.plan }}
       run: pnpm dlx "tsx@$TSX_VERSION" "$ACTION_PATH/../../scripts/ci/$SCRIPT"

@@ -1,0 +1,214 @@
+# Reusable release for every @tselect package.
+#
+#   uses: tselect-npm/.github/.github/workflows/publish.yml@v1
+#
+# Publishes from CI and nowhere else. Nothing on a laptop can put a version of
+# these packages on the registry once this is adopted, because after the first
+# OIDC publish there is no npm token left to do it with.
+#
+# One click in a repository's Actions tab does all of it: work out the version
+# from the gitmoji in the commits since the last release, wait for someone on the
+# shortlist to approve it, bump `package.json`, commit and tag on the release
+# branch, and publish.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# Three things about this file are load-bearing and easy to undo by accident.
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# 1. **The caller must be named `publish.yml`.** npm's trusted publisher config
+#    names one workflow file per package, and for a reusable workflow npm
+#    validates the *caller's* filename, not this one. Rename a caller and its
+#    publishes stop with a 404 that says nothing about filenames. All seven
+#    callers are therefore identical in name and near-identical in content.
+#
+# 2. **`id-token: write` is needed in the caller too.** A reusable workflow can
+#    only narrow the permissions it was given, never widen them, so a caller that
+#    omits it produces a job with no OIDC token and the same unhelpful 404. This
+#    is why the caller template sets permissions explicitly rather than relying
+#    on the repository default.
+#
+# 3. **`plan` runs outside the environment; `publish` runs inside it.** Gating a
+#    release on approval is only worth anything if the approver can see what they
+#    are approving, so the version, the tag and the commits behind them are
+#    computed and written to the run summary *before* the approval is requested.
+#    Moving the planning inside the environment would turn every approval into a
+#    blank cheque.
+#
+# What each job *does* lives in `scripts/ci/publish-plan.ts` and
+# `scripts/ci/publish.ts`. As in `ci.yml`, this file is only the wiring, and the
+# wrapper action is referenced at an immutable `@vX.Y.Z` tag for the reasons
+# spelled out at the top of `ci.yml`.
+
+name: Publish
+
+on:
+  workflow_call:
+    inputs:
+      # --- what to release ----------------------------------------------------
+      bump:
+        description: >-
+          'auto' reads the bump out of the gitmoji in the commits since the last
+          release. 'major' | 'minor' | 'patch' override it. The override is not an
+          escape hatch for unusual cases — it is how a breaking change that
+          gitmoji has no marker for gets released, and raising `engines.node` is
+          exactly that. See scripts/ci/lib/gitmoji.ts for the table.
+        type: string
+        default: auto
+      dry-run:
+        description: >-
+          Run every check and the packaging rehearsal, then stop before the
+          commit, the tag, the push and the publish. Still requires the
+          environment approval, so it doubles as a way to test the approval path.
+        type: boolean
+        default: false
+      dist-tag:
+        description: 'npm dist-tag to publish under.'
+        type: string
+        default: latest
+
+      # --- where to release from ----------------------------------------------
+      release-branch:
+        description: >-
+          The only branch a release may be cut from. Not derived from the
+          repository's default branch on purpose: this is a claim about where
+          reviewed code lands, and it should fail loudly if the two ever differ.
+          The five repositories still on `master` set it here until they migrate.
+        type: string
+        default: main
+      tag-prefix:
+        description: 'Prefix for the tag. `v1.2.3` is what every existing tag in the organization looks like.'
+        type: string
+        default: v
+      since-ref:
+        description: >-
+          Count commits from this ref instead of the tag matching the published
+          version. An escape hatch for histories where the tags do not line up
+          with what the registry actually serves — which is all of these
+          repositories, since their tags run back to the `@bluejay` era.
+        type: string
+        default: ''
+
+      # --- who may release ----------------------------------------------------
+      environment:
+        description: >-
+          GitHub environment the publish job runs in. Its required reviewers are
+          the shortlist, and its name must match the environment configured on the
+          package's npm trusted publisher. See environments/npm-publish.json.
+        type: string
+        default: npm-publish
+
+      # --- toolchain ----------------------------------------------------------
+      node-version:
+        description: 'Node version used to build and publish. No matrix here — a release is built once.'
+        type: string
+        default: '24'
+      install-command:
+        type: string
+        default: pnpm install --frozen-lockfile
+      cache:
+        type: string
+        default: pnpm
+      runs-on:
+        type: string
+        default: ubuntu-latest
+      tsx-version:
+        type: string
+        default: '4.23.12'
+
+# Least privilege by default; the publish job widens its own. The plan job reads
+# the repository and the registry and writes to neither.
+permissions:
+  contents: read
+
+# No `concurrency` here, for the reason given in ci.yml: inside a reusable
+# workflow the group would resolve against the caller and collide across repos.
+# The caller template sets it — and sets `cancel-in-progress: false`, because
+# cancelling a release between the push and the publish is the one interruption
+# this design cannot make cheap.
+
+jobs:
+  # Work out the release without performing it. Fails here — cheaply, and before
+  # anyone is asked to approve anything — on a wrong branch, a shallow checkout,
+  # an existing tag, a version already on the registry, or a commit range that
+  # implies no release at all.
+  #
+  # → scripts/ci/publish-plan.ts
+  plan:
+    name: plan
+    runs-on: ${{ inputs.runs-on }}
+    outputs:
+      # The whole plan, handed to the publish job verbatim so that what is
+      # approved and what is executed cannot drift apart field by field.
+      result: ${{ steps.plan.outputs.result }}
+      # `|| '{}'` for the same reason ci.yml's build job does it: job outputs are
+      # still evaluated when the job fails, and `fromJSON('')` raises an
+      # expression error that replaces the script's actual message with a syntax
+      # complaint about a string nobody wrote.
+      version: ${{ fromJSON(steps.plan.outputs.result || '{}').version }}
+      tag: ${{ fromJSON(steps.plan.outputs.result || '{}').tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Both the tags and the full commit history are the input to the
+          # inference. A shallow checkout would silently narrow the range it is
+          # computed from, so the script also asserts this rather than trusting it.
+          fetch-depth: 0
+
+      - uses: tselect-npm/.github/actions/run-ci-script@v1.2.0
+        id: plan
+        with:
+          script: publish-plan.ts
+          node-version: ${{ inputs.node-version }}
+          # Nothing is built here; the script needs git, pnpm and the registry.
+          install: ''
+          cache: ${{ inputs.cache }}
+          tsx-version: ${{ inputs.tsx-version }}
+          inputs: ${{ toJSON(inputs) }}
+
+  # Everything with a consequence, behind the environment's required reviewers.
+  #
+  # → scripts/ci/publish.ts
+  publish:
+    name: publish ${{ needs.plan.outputs.version }}
+    needs: plan
+    runs-on: ${{ inputs.runs-on }}
+
+    # The gate. Approval is requested when this job is ready to start, which is
+    # after `plan` has written its summary — so the reviewer approves a version
+    # they can see. The environment is also where npm's trusted publisher config
+    # points, which means an approval is required for the OIDC token to exist at
+    # all, not merely for the job to run.
+    environment:
+      name: ${{ inputs.environment }}
+      url: https://www.npmjs.com/package/${{ fromJSON(needs.plan.outputs.result || '{}').name }}
+
+    permissions:
+      # Push the release commit and the tag to the release branch.
+      contents: write
+      # Mint the OIDC token npm exchanges for publish rights. Without it the
+      # publish fails with a 404, and the caller must grant it too.
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          # Left at the default `true`: the push needs the credentials this
+          # writes into the remote URL.
+          persist-credentials: true
+
+      # No `registry-url` on setup-node anywhere in this workflow, and that is
+      # deliberate. It writes an .npmrc containing `_authToken=${NODE_AUTH_TOKEN}`
+      # — a placeholder that, with no token to expand it, pnpm used to send to the
+      # registry literally, failing before OIDC was ever tried (pnpm#11513, fixed
+      # in 11.1.3). The default registry is npmjs.org anyway, so the safest .npmrc
+      # is the one that does not exist.
+      - uses: tselect-npm/.github/actions/run-ci-script@v1.2.0
+        with:
+          script: publish.ts
+          node-version: ${{ inputs.node-version }}
+          install: ${{ inputs.install-command }}
+          cache: ${{ inputs.cache }}
+          tsx-version: ${{ inputs.tsx-version }}
+          inputs: ${{ toJSON(inputs) }}
+          plan: ${{ needs.plan.outputs.result }}

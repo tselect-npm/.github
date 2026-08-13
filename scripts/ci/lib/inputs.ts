@@ -1,5 +1,5 @@
 /**
- * The reusable workflow's inputs, as one typed object.
+ * A reusable workflow's inputs, as one typed object.
  *
  * The workflow hands the whole `inputs` context to the wrapper action as
  * `${{ toJSON(inputs) }}`, so a script reads whatever it needs without the
@@ -49,19 +49,52 @@ export interface CiInputs {
   'attw-version': string;
 }
 
-function parse(): CiInputs {
+/**
+ * The publish workflow's inputs. Same contract as `CiInputs`, different
+ * workflow: `.github/workflows/publish.yml` documents each one.
+ */
+export interface PublishInputs {
+  // Release
+  bump: string;
+  'release-branch': string;
+  'tag-prefix': string;
+  'dist-tag': string;
+  'since-ref': string;
+  'dry-run': boolean;
+
+  // Who may release
+  environment: string;
+
+  // Toolchain
+  'node-version': string;
+  'install-command': string;
+  cache: string;
+  'runs-on': string;
+  'tsx-version': string;
+}
+
+function parse(): Record<string, unknown> {
   const raw = process.env.CI_INPUTS;
 
   core.assert(raw, 'CI_INPUTS is not set — the wrapper action must pass toJSON(inputs)');
 
   try {
-    return JSON.parse(raw) as CiInputs;
+    return JSON.parse(raw) as Record<string, unknown>;
   } catch (cause) {
     throw new Error(`CI_INPUTS is not valid JSON: ${(cause as Error).message}`);
   }
 }
 
-export const inputs: CiInputs = parse();
+/**
+ * `CI_INPUTS` carries whichever workflow is running, so it is parsed once and
+ * published under two names. A script imports the one belonging to its workflow;
+ * nothing reads both, and a script that imported the wrong one would fail
+ * immediately on an undefined input rather than misbehave quietly.
+ */
+const parsed = parse();
+
+export const inputs = parsed as unknown as CiInputs;
+export const publishInputs = parsed as unknown as PublishInputs;
 
 /**
  * Read a boolean input.
