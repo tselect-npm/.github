@@ -11,12 +11,25 @@
 # where it can be read and typechecked as code rather than as YAML-quoted bash.
 #
 # `actions/run-ci-script` provisions Node + pnpm and runs one of those scripts.
-# It is referenced at `@v1`, the same tag callers use for this workflow: both
-# live in this repository, so a caller on `v1` gets this file and that action
-# from a single commit, and moving `v1` moves both together. The corollary is
-# that a change to the action cannot be exercised by a pull request against this
-# repository until a tag moves — test those against a scratch tag, as the README
-# describes.
+# It is referenced at an **immutable** `@vX.Y.Z` tag, not at `@v1`, and the
+# reference is bumped in the same commit that is then tagged with that version.
+#
+# Two things were measured before settling on that, both against a real runner:
+#
+#   * `@v1` does not work. The ref is resolved independently of the tag the
+#     caller used for this workflow, so a scratch tag testing a change to the
+#     wrapper still loads the wrapper from wherever `v1` points — the old commit:
+#     "Can't find 'action.yml' … for action 'tselect-npm/.github/…@v1'".
+#   * `./actions/run-ci-script` does not work either. Inside a reusable workflow
+#     a relative ref resolves against the *caller's* workspace, not this
+#     repository: "Can't find 'action.yml' … under
+#     '/home/runner/work/url/url/actions/run-ci-script'".
+#
+# An immutable version tag is the only form that lets a change be run before it
+# is released: tag the branch, and both the workflow and the wrapper resolve to
+# it. The cost is that the version here has to be bumped for every change to the
+# action — deliberately, since that is what makes the pairing reviewable.
+# The README's "Releasing a change" section is the procedure.
 #
 # Every marketplace action is pinned to a commit SHA (the tag is in the trailing
 # comment) so a moved tag upstream cannot silently change what runs in seven
@@ -157,7 +170,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: tselect-npm/.github/actions/run-ci-script@v1
+      - uses: tselect-npm/.github/actions/run-ci-script@v1.1.0
         with:
           script: test.ts
           node-version: ${{ matrix.node }}
@@ -194,7 +207,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: tselect-npm/.github/actions/run-ci-script@v1
+      - uses: tselect-npm/.github/actions/run-ci-script@v1.1.0
         with:
           script: static.ts
           node-version: ${{ inputs.primary-node-version }}
@@ -216,7 +229,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: tselect-npm/.github/actions/run-ci-script@v1
+      - uses: tselect-npm/.github/actions/run-ci-script@v1.1.0
         id: build
         with:
           script: build.ts
@@ -254,7 +267,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: tselect-npm/.github/actions/run-ci-script@v1
+      - uses: tselect-npm/.github/actions/run-ci-script@v1.1.0
         with:
           script: audit.ts
           node-version: ${{ inputs.primary-node-version }}
@@ -279,7 +292,7 @@ jobs:
       # different?" than the ~20s of setup it saves.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: tselect-npm/.github/actions/run-ci-script@v1
+      - uses: tselect-npm/.github/actions/run-ci-script@v1.1.0
         with:
           script: aggregate.ts
           node-version: ${{ inputs.primary-node-version }}
