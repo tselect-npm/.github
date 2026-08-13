@@ -206,23 +206,56 @@ composite action can only expose as a statically declared output. There is one,
 called `result`, carrying JSON; the build job uses it to tell the workflow
 whether a tarball exists to upload.
 
-### The wrapper is referenced at `@v1` too
+### The wrapper is pinned to an immutable version tag
 
-`ci.yml` references the action as `tselect-npm/.github/actions/run-ci-script@v1`
-— a full `owner/repo/path@ref`, because inside a reusable workflow `./actions/…`
-would resolve against the *caller's* checkout, not this repository.
+`ci.yml` references the action as
+`tselect-npm/.github/actions/run-ci-script@v1.1.0` — a full
+`owner/repo/path@ref` at an **immutable** tag, bumped in the same commit that
+then receives that tag.
 
-Both live here, so a caller on `v1` gets the workflow and the action from one
-commit, and moving `v1` moves both together. The corollary is a bootstrapping
-wrinkle worth knowing before you edit the action: **a pull request against this
-repository cannot exercise its own changes to the wrapper**, because the workflow
-under review still resolves the action at whatever `v1` currently points to. To
-test a change, push a scratch tag and point a caller at it:
+That looks redundant when the workflow and the action ship from one repository,
+and the two more obvious forms were both tried on a real runner first. Both fail:
+
+| Form | What happens |
+| --- | --- |
+| `…/run-ci-script@v1` | The action ref resolves **independently** of the tag the caller used for the workflow. Loading the workflow from a scratch tag still loads the wrapper from wherever `v1` points — the previous release. `Can't find 'action.yml' … for action 'tselect-npm/.github/actions/run-ci-script@v1'` |
+| `./actions/run-ci-script` | A relative ref inside a reusable workflow resolves against the **caller's** workspace, not this repository. `Can't find 'action.yml' … under '/home/runner/work/url/url/actions/run-ci-script'` |
+
+So `@v1` is untestable-before-release and `./` is simply wrong. An immutable
+version tag is the only form where tagging a branch makes *both* the workflow and
+the wrapper resolve to that branch, which is what lets a change run before it is
+released.
+
+The cost is real: **every change to the wrapper needs the version bumped here**,
+in the same commit. That is deliberate — it is what keeps the pairing visible in
+review instead of implicit in a tag that moves later.
+
+### Releasing a change
+
+`v1` is what callers use, so nothing reaches a package repository until it moves.
+That makes the order matter:
 
 ```bash
-git tag -f v1-test && git push -f origin v1-test
-# then, in a package repo, temporarily: uses: tselect-npm/.github/.github/workflows/ci.yml@v1-test
+# 1. On the branch, with the ci.yml ref already bumped to the new version:
+git tag -f v1.1.0 && git push -f origin v1.1.0     # the wrapper now resolves
+git tag -f v1-test && git push -f origin v1-test   # the workflow, for the probe
+
+# 2. In one package repo, on a throwaway branch, point the caller at the probe:
+#      uses: tselect-npm/.github/.github/workflows/ci.yml@v1-test
+#    …open a PR so the workflow actually triggers, and read the run.
+
+# 3. Iterate: amend, force both tags to the new head, push, re-run.
+
+# 4. Merge, then move the tag callers actually use:
+git tag -f v1 && git push -f origin v1
+git push origin :refs/tags/v1-test                 # tidy up
 ```
+
+Force-moving `v1.1.0` during step 3 is fine — nothing consumes it until `v1`
+moves. Once it does, treat it as immutable.
+
+A package repo's probe branch is disposable and should never be merged; the
+caller file on `main` always points at `v1`.
 
 ---
 
@@ -529,8 +562,10 @@ lived in `run:` blocks. Both the passing and the failing branch of each gate:
 Plus `tsc --noEmit` over `scripts/`, `actionlint` 1.7.12 clean over both
 workflows, and `action.yml` parsed.
 
-> **Not yet exercised on a runner.** The wrapper action's own wiring —
-> `github.action_path` resolution, the composite `outputs.result` plumbing,
-> `cache: ''` — cannot run until a tag points at a commit containing it, for the
-> reason in [The wrapper is referenced at `@v1` too](#the-wrapper-is-referenced-at-v1-too).
-> Push a scratch tag and run one package repo against it before moving `v1`.
+### The wrapper, on a runner
+
+The wrapper's own wiring cannot be exercised by a pull request against this
+repository, so it was probed from `tselect-npm/url` against a scratch tag before
+`v1` moved. That probe is what established the ref-resolution table above — the
+first two attempts failed in 2–4 seconds, both at action resolution rather than
+in any job logic.
