@@ -58,14 +58,19 @@ jobs:
       # Same bar, same reason, for the rulesets: nothing here consumes them, so a
       # malformed file would first be seen as an unhelpful error in a package
       # repository's settings UI, halfway through importing it by hand.
+      #
+      # Concatenation rather than template literals on purpose: a `${…}` inside
+      # the single-quoted script is a shell expansion as far as shellcheck is
+      # concerned (SC2016), and actionlint fails the job over it.
       - name: Parse the rulesets
         run: |
           node --eval '
             const fs = require("node:fs")
-            for (const f of fs.readdirSync("rulesets").filter((f) => f.endsWith(".json"))) {
-              const r = JSON.parse(fs.readFileSync(`rulesets/${f}`, "utf8"))
+            for (const f of fs.readdirSync("rulesets").filter((n) => n.endsWith(".json"))) {
+              const path = "rulesets/" + f
+              const r = JSON.parse(fs.readFileSync(path, "utf8"))
               for (const k of ["name", "target", "enforcement", "rules"]) {
-                if (!(k in r)) throw new Error(`rulesets/${f}: missing "${k}"`)
+                if (!(k in r)) throw new Error(path + ": missing " + k)
               }
             }
           '
