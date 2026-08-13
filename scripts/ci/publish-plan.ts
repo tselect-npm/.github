@@ -252,9 +252,21 @@ function summarizeCommits(classifications: ReturnType<typeof infer>['classificat
   core.summary('');
 }
 
-/** Keep a subject containing a pipe from breaking the Markdown table. */
+/**
+ * Keep a commit subject from breaking out of its Markdown table cell.
+ *
+ * **Backslashes first, then pipes.** Escaping only the pipe is the bug CodeQL
+ * calls "incomplete string escaping": a subject ending in a backslash before a
+ * pipe — `fixed foo\|bar` — turns into `fixed foo\\|bar`, where the doubled
+ * backslash renders as one literal backslash and leaves the pipe unescaped,
+ * splitting the row. Escaping the escape character first is what closes it.
+ *
+ * The commit subject is the only free-form text in the summary, and it comes
+ * from `%s`, which is the first line of the message — so a newline cannot reach
+ * here and split the row on its own.
+ */
 function escapeCell(value: string): string {
-  return value.replace(/\|/g, '\\|');
+  return value.replace(/\\/g, '\\\\').replace(/\|/g, '\\|');
 }
 
 /** Whether `inferred` ranks below `chosen`, for the log line only. */
