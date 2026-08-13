@@ -75,6 +75,29 @@ jobs:
             }
           '
 
+      # The environments are applied by piping them into `gh api`, so a bad file
+      # surfaces as a 422 with no line number. This also catches the placeholder
+      # reviewer id — the one field that has to be edited before the file is worth
+      # applying, and the one nothing else would object to, since `"id": 0` is
+      # valid JSON and a reviewer who does not exist.
+      - name: Parse the environments
+        run: |
+          node --eval '
+            const fs = require("node:fs")
+            for (const f of fs.readdirSync("environments").filter((n) => n.endsWith(".json"))) {
+              const path = "environments/" + f
+              const e = JSON.parse(fs.readFileSync(path, "utf8"))
+              if (!Array.isArray(e.reviewers) || e.reviewers.length === 0) {
+                throw new Error(path + ": no reviewers, which is the whole point")
+              }
+              for (const r of e.reviewers) {
+                if (r.type !== "User" && r.type !== "Team") {
+                  throw new Error(path + ": reviewer type must be User or Team")
+                }
+              }
+            }
+          '
+
   workflows:
     name: actionlint
     runs-on: ubuntu-latest
