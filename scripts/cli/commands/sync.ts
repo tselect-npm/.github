@@ -49,9 +49,12 @@ export async function sync(options: SyncOptions): Promise<number> {
   if (options.apply) {
     const scopes = await tokenScopes(octokit);
     if (scopes && !scopes.includes('repo')) {
-      throw new Error(
-        `token is missing the \`repo\` scope (has: ${scopes.join(', ') || 'none'}); run \`gh auth refresh -s repo\``,
-      );
+      // The scopes the token *does* carry are deliberately not echoed. They
+      // describe the credential rather than the request, and this message ends
+      // up on a terminal and in whatever scrollback or CI log is watching —
+      // `js/clear-text-logging` flags the flow, and it is right to. Naming the
+      // one missing scope is all the message needs to be actionable.
+      throw new Error('token is missing the `repo` scope; run `gh auth refresh -s repo`');
     }
   }
 
