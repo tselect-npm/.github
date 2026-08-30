@@ -1,0 +1,42 @@
+{
+  "//": "Repo-level settings that must be identical across all seven packages. Snapshotted from tselect-npm/url with `tselect pull`. Keys map one-to-one onto PATCH /repos/{owner}/{repo}, except `security` — see below.",
+  "//merge": "Squash is the only merge method, matching `allowed_merge_methods: [\"squash\"]` in rulesets/pr-required.json. Leaving merge/rebase enabled in settings while the ruleset rejects them just produces buttons that fail at click time. PR_TITLE + BLANK because a squashed branch's gitmoji series collapses into one commit and the release workflow reads the emoji off the PR title.",
+  "allow_squash_merge": true,
+  "allow_merge_commit": false,
+  "allow_rebase_merge": false,
+  "squash_merge_commit_title": "PR_TITLE",
+  "squash_merge_commit_message": "BLANK",
+  "delete_branch_on_merge": true,
+  "allow_auto_merge": true,
+  "allow_update_branch": true,
+  "//features": "Issues stay on — the modernization tracks findings there. Wiki and Projects are on because that is the reference repo's state; Discussions stay off.",
+  "has_issues": true,
+  "has_wiki": true,
+  "has_projects": true,
+  "has_discussions": false,
+  "web_commit_signoff_required": false,
+  "//actions": "Its own endpoint (PUT …/actions/permissions), not part of the PATCH body. Worth managing because the failure is silent: `status-code` had Actions switched off entirely, so its CI would never have run and CodeQL default setup could not be enabled either — nothing reports that, the workflows simply never start.",
+  "actions": {
+    "enabled": true,
+    "allowed_actions": "all"
+  },
+  "//security": "Not part of the PATCH body — each of these is its own REST endpoint, applied by the `security` provider. Grouped here so one file is the whole desired state for a repo.",
+  "security": {
+    "vulnerability_alerts": true,
+    "automated_security_fixes": true,
+    "private_vulnerability_reporting": true,
+    "secret_scanning": "enabled",
+    "secret_scanning_push_protection": "enabled",
+    "secret_scanning_non_provider_patterns": "disabled",
+    "secret_scanning_validity_checks": "disabled",
+    "//code_scanning": "CodeQL default setup. `actions` is in the language list on the reference repo and is the one worth keeping — the shared workflows are the largest attack surface here. Weekly, default query suite.",
+    "code_scanning_default_setup": {
+      "state": "configured",
+      "query_suite": "default",
+      "languages": [
+        "actions",
+        "javascript-typescript"
+      ]
+    }
+  }
+}

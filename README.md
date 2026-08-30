@@ -12,12 +12,55 @@ their CI logic is allowed to be shared.
 | --- | --- |
 | [`ci.yml`](.github/workflows/ci.yml) | Typecheck · lint · test + coverage · build · audit, across the supported Node matrix |
 | [`publish.yml`](.github/workflows/publish.yml) | Manually triggered release: infer the version from gitmoji, gate on approval, tag, publish to npm |
-| [`self-check.yml`](.github/workflows/self-check.yml) | Typechecks the CI scripts, lints the workflows, and parses the rulesets and environments |
+| [`self-check.yml`](.github/workflows/self-check.yml) | Typechecks the CI scripts, lints the workflows, and validates the rulesets, environments and `tselect` config |
 
-Alongside them, [`rulesets/`](rulesets/) holds four importable branch rulesets —
-one protection per file, so each can be disabled on its own — and
+Alongside them, [`rulesets/`](rulesets/) holds four branch rulesets — one
+protection per file, so each can be disabled on its own — and
 [`environments/`](environments/) holds the deployment environment that decides who
 may approve a release. See [Rulesets](#rulesets) and [Publishing](#publishing).
+
+---
+
+## `tselect`
+
+Seven repositories that should be configured identically, configured by hand, is
+seven chances to be wrong in a way nothing reports. `tselect` makes the
+configuration a file and the seven repos a consequence of it.
+
+```bash
+pnpm tselect status                    # where each repo stands
+pnpm tselect sync                      # dry run: what would change, and where
+pnpm tselect sync url --apply          # apply, one repo or all
+pnpm tselect pull                      # re-snapshot the reference repo into config/
+pnpm tselect check                     # validate config/ offline (what CI runs)
+```
+
+`url` is the reference: it is configured through the web UI, `pull` snapshots it
+into [`config/`](config/), and `sync` carries that to the other six. **Nothing is
+written without `--apply`** — every provider prints its plan first, and applies
+exactly the list it printed.
+
+| Provider | What it manages |
+| --- | --- |
+| `settings` | Description, topics, merge methods, feature toggles, **Actions enablement** |
+| `security` | Dependabot, secret scanning, private reporting, CodeQL default setup |
+| `labels` | The shared label set, including Dependabot's `dependencies` |
+| `files` | `.github/workflows/{ci,publish}.yml` in the **local clones** |
+| `rulesets` | The four branch rulesets in [`rulesets/`](rulesets/) |
+
+Authentication is a token from `gh auth token`, else `GITHUB_TOKEN`; `repo` scope
+is enough. The `files` provider writes to the local clone and never through the
+Contents API, which is what keeps `workflow` scope out of the requirement — and it
+stages nothing and commits nothing, so a generated file is reviewed like any other
+change. It also refuses a repo that has not been modernized yet: dropping a caller
+for the pnpm/Vitest workflow into a repo still on npm and Mocha does not configure
+CI, it just paints every future commit red.
+
+Three things it found on the first run that no one had noticed: Actions was
+**disabled outright** on `status-code`, so its CI could never have run; the
+`bypass_actors` entry in `pr-required` had never applied to any repo and cannot
+(see [Rulesets](#rulesets)); and `http-method` was missing `publish.yml`
+entirely.
 
 ---
 
@@ -373,34 +416,54 @@ pushes here, which is the same as not having them. The escape hatch is to set th
 one ruleset to **Disabled**, do the thing, and set it back — visible in the
 ruleset's history, unlike a silent bypass.
 
-The single exception is the **GitHub Actions app (`15368`) on `pr-required`**,
-added so [`publish.yml`](.github/workflows/publish.yml) can push its
-`:bookmark: X.Y.Z` release commit to the branch. It is worth being clear about
-what it widens: any workflow in the repo with `contents: write` can now push to
-the default branch. What keeps that narrow is that a workflow is itself code that
-had to land through a pull request, and the only one using it stops for an
-approval first. The other three rulesets — including `no-force-push` and
-`no-delete` — have no bypass at all, so the release commit can be added but never
-rewritten away.
+`bypass_actors` is empty in all four files, and — this is a constraint rather
+than a choice — **it cannot contain the GitHub Actions app**. `pr-required` used
+to declare the app (`15368`) so that [`publish.yml`](.github/workflows/publish.yml)
+could push its `:bookmark: X.Y.Z` release commit straight to the default branch.
+The API refuses it:
 
-### Importing
+```
+422 Validation Failed
+Actor GitHub Actions integration must be part of the ruleset source or owner organization
+```
 
-Per repo: **Settings → Rules → Rulesets → New ruleset → Import a ruleset**, then
-pick the file. Repeat for each of the four. The `name` in each file is what the
-ruleset is called once imported, and it matches the filename so a ruleset in the
-settings UI can be traced back here.
+An `Integration` bypass actor has to be an app *installed on the organization*,
+and first-party GitHub Actions is not one — `GET /orgs/tselect-npm/installations`
+lists only third-party apps. The declaration was therefore never in effect on any
+repo, which is why `url` and `thrown` were both found with an empty
+`bypass_actors` despite the file saying otherwise. It has been removed so that
+the checked-in state is the state that can exist.
 
-Nothing keeps an imported copy in sync with this repository — an edit here has to
-be re-imported (or hand-applied) in each repo. With seven repos and four files
-that is 28 imports, which is the cost of these being repository rulesets rather
-than one org ruleset. They are repository rulesets on purpose: an org ruleset
-cannot be disabled for a single repo, so a repo mid-migration could not opt out
-of the CI gate before it has CI.
+Recorded for whenever publishing comes up: with `pr-required` active and no
+bypass, the release job's direct push to `main` is rejected. The options at that
+point are to have the workflow open a PR instead, push with a token belonging to
+an actor that *can* bypass, or disable the ruleset for the length of a release.
 
-### Two things to check before importing `ci-required`
+### Applying
 
-* The repo must already have a green `ci / ci` run. A required check that has
-  never reported blocks every PR, with nothing to click.
+```bash
+pnpm tselect sync                    # dry run: every repo, every provider
+pnpm tselect sync status-code --apply
+```
+
+`tselect` reads these files and applies them over the API, matching each ruleset
+on its `name` so a re-run updates in place rather than duplicating. It replaces
+what this section used to describe — **Settings → Rules → Rulesets → Import a
+ruleset**, once per file per repo, 28 times, with nothing keeping an imported
+copy in step with this repository afterwards.
+
+They remain *repository* rulesets rather than one org ruleset on purpose: an org
+ruleset cannot be disabled for a single repo, so a repo mid-migration could not
+opt out of the CI gate before it has CI. The cost of that choice used to be the
+28 imports; now it is one command.
+
+### Two things to check before applying `ci-required`
+
+* Ideally the repo already has a green `ci / ci` run — until one exists, a PR
+  waits on a check that never reports. `tselect` applies `ci-required` anyway and
+  warns when it finds no `ci.yml` run: the protection is worth having in place
+  before the first PR, and the wait resolves itself as soon as the CI caller
+  lands.
 * `integration_id` is `15368` — GitHub Actions. It pins the check to that app, so
   another integration cannot satisfy the requirement by posting a status with the
   same name.

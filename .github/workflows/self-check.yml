@@ -55,25 +55,17 @@ jobs:
       - name: Parse the wrapper action
         run: pnpm dlx js-yaml@4.1.0 actions/run-ci-script/action.yml > /dev/null
 
-      # Same bar, same reason, for the rulesets: nothing here consumes them, so a
-      # malformed file would first be seen as an unhelpful error in a package
-      # repository's settings UI, halfway through importing it by hand.
+      # Same bar, same reason, for the rulesets and the tselect config: nothing
+      # in this repository consumes them at run time, so a malformed file would
+      # first be seen as a 422 from the middle of a `tselect sync --apply`, with
+      # some repos already changed.
       #
-      # Concatenation rather than template literals on purpose: a `${…}` inside
-      # the single-quoted script is a shell expansion as far as shellcheck is
-      # concerned (SC2016), and actionlint fails the job over it.
-      - name: Parse the rulesets
-        run: |
-          node --eval '
-            const fs = require("node:fs")
-            for (const f of fs.readdirSync("rulesets").filter((n) => n.endsWith(".json"))) {
-              const path = "rulesets/" + f
-              const r = JSON.parse(fs.readFileSync(path, "utf8"))
-              for (const k of ["name", "target", "enforcement", "rules"]) {
-                if (!(k in r)) throw new Error(path + ": missing " + k)
-              }
-            }
-          '
+      # `tselect check` rather than a `node --eval` block here on purpose: it
+      # runs the CLI's own loaders, so the rules cannot drift apart from the code
+      # they exist to protect. A validator that accepts a file the tool then
+      # rejects is worse than no validator.
+      - name: Validate the tselect config
+        run: pnpm run tselect check
 
       # The environments are applied by piping them into `gh api`, so a bad file
       # surfaces as a 422 with no line number. This also catches the placeholder
