@@ -1,0 +1,53 @@
+{
+  "//": "The issue/PR labels every package repo should carry, snapshotted from tselect-npm/url. `dependencies` is the load-bearing one: .github/dependabot.yml applies it by name, and a Dependabot PR into a repo without it opens unlabelled. The rest are GitHub's defaults, kept so the seven repos read the same.",
+  "//prune": "When false (the default) `sync` only creates and updates; labels present on a repo but absent here are reported and left alone. Deleting a label detaches it from every issue that used it, which is not something to do as a side effect of a settings sync.",
+  "prune": false,
+  "//description": "A null description means the field is unmanaged, not that it must be blank. `url` predates GitHub's descriptions on the default labels; the repos created later have them. Enforcing null would delete real text from six repos to match an absence in one. Write a string here to take ownership of a description.",
+  "labels": [
+    {
+      "name": "bug",
+      "color": "ee0701",
+      "description": null
+    },
+    {
+      "name": "dependencies",
+      "color": "0366d6",
+      "description": "Pull requests that update a dependency file"
+    },
+    {
+      "name": "duplicate",
+      "color": "cccccc",
+      "description": null
+    },
+    {
+      "name": "enhancement",
+      "color": "84b6eb",
+      "description": null
+    },
+    {
+      "name": "good first issue",
+      "color": "7057ff",
+      "description": null
+    },
+    {
+      "name": "help wanted",
+      "color": "33aa3f",
+      "description": null
+    },
+    {
+      "name": "invalid",
+      "color": "e6e6e6",
+      "description": null
+    },
+    {
+      "name": "question",
+      "color": "cc317c",
+      "description": null
+    },
+    {
+      "name": "wontfix",
+      "color": "ffffff",
+      "description": null
+    }
+  ]
+}

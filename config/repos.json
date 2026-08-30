@@ -1,0 +1,54 @@
+{
+  "//": "The repositories `tselect` manages, and the settings that are genuinely per-repo. Everything uniform lives in repo-settings.json / labels.json / ../rulesets/. `description`, `homepage` and `topics` describe the package rather than the toolchain, so they are declared here and never copied from the reference repo.",
+  "owner": "tselect-npm",
+  "reference": "url",
+  "repos": [
+    {
+      "name": "url",
+      "description": "Url related utilities.",
+      "topics": []
+    },
+    {
+      "name": "thrown",
+      "description": "Handle specific exceptions like you would in classic OOP languages.",
+      "topics": ["error", "error-handling", "exception-handling", "handling", "oop", "typescript"],
+      "//": "Emits es2016 rather than es2015, so its CI caller passes `es-check-target`. That override — and the paragraph explaining it — live in templates/workflows/thrown/ci.yml rather than being generated from a key here; a generated `with:` block would drop the comment on every sync."
+    },
+    {
+      "name": "http-method",
+      "description": "HTTP methods related enums and utilities.",
+      "topics": []
+    },
+    {
+      "name": "status-code",
+      "description": "HTTP status codes utility.",
+      "topics": []
+    },
+    {
+      "name": "countries",
+      "description": "Country related enums and data",
+      "topics": []
+    },
+    {
+      "name": "schema",
+      "description": "Typed, programmatic JSON schemas.",
+      "topics": []
+    },
+    {
+      "name": "access-control",
+      "description": "Simple, flexible and reliable access control for NodeJS and Typescript. Supports both RBAC and ABAC.",
+      "topics": [
+        "abac",
+        "accesscontrol",
+        "acl",
+        "bluejay",
+        "node",
+        "npm",
+        "permission",
+        "rbac",
+        "role",
+        "typescript"
+      ]
+    }
+  ]
+}

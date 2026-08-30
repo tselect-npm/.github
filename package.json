@@ -9,11 +9,17 @@
   "engines": {
     "node": ">=22"
   },
+  "//bin": "`tselect` configures the seven package repos from config/. It runs on a laptop against the API, never on a runner, so unlike scripts/ci/ it is allowed a dependency.",
+  "bin": {
+    "tselect": "./scripts/cli/index.ts"
+  },
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "tselect": "tsx scripts/cli/index.ts"
   },
   "devDependencies": {
     "@types/node": "26.2.0",
+    "octokit": "^5.0.3",
     "tsx": "4.23.12",
     "typescript": "7.0.2"
   }
